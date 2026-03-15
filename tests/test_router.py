@@ -4,8 +4,6 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
-from datetime import datetime, timezone
 
 from auto_coder.router import ProviderRouter, _today
 
@@ -72,6 +70,20 @@ class TestProviderRouter(unittest.TestCase):
             router = _make_router(tmp)
             router.record("cch", 999_999)
             self.assertEqual(router.usage_ratio("cch"), 0.0)
+
+    def test_mark_quota_exhausted_sets_retry_after(self):
+        with TemporaryDirectory() as tmp:
+            router = _make_router(tmp)
+            snapshot = router.mark_quota_exhausted("ccg")
+            self.assertEqual(snapshot.quota_state, "exhausted")
+            self.assertIsNotNone(snapshot.retry_after)
+
+    def test_summary_contains_quota_state(self):
+        with TemporaryDirectory() as tmp:
+            router = _make_router(tmp)
+            summary = router.summary()
+            self.assertIn("quota_state", summary["ccg"])
+            self.assertIn("probe_source", summary["ccg"])
 
 
 if __name__ == "__main__":

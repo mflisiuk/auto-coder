@@ -11,7 +11,9 @@ from auto_coder.storage import (
     latest_work_order_for_task,
     list_attempts_for_task,
     list_tables,
+    latest_quota_snapshots,
     load_manager_messages,
+    record_quota_snapshot,
     record_attempt,
     save_manager_messages,
     set_task_runtime,
@@ -102,6 +104,16 @@ class TestStorage(unittest.TestCase):
             self.assertEqual(len(attempts), 1)
             self.assertEqual(attempts[0]["work_order_id"], "task-1-wo-01")
             self.assertEqual(messages[0]["content"], "Fix edge case")
+
+    def test_latest_quota_snapshots_returns_newest_per_provider(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.db"
+            ensure_database(db_path)
+            record_quota_snapshot(db_path, provider="ccg", quota_state="healthy", usage_ratio=0.2, payload={})
+            record_quota_snapshot(db_path, provider="ccg", quota_state="near_limit", usage_ratio=0.9, payload={})
+            rows = latest_quota_snapshots(db_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["quota_state"], "near_limit")
 
 
 if __name__ == "__main__":

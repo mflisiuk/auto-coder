@@ -98,6 +98,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "OK  " if ok else "FAIL"
         print(f"  {status}  {name}")
 
+    from auto_coder.router import ProviderRouter
+    router = ProviderRouter(config, config["usage_path"])
+    probe_info = router.probe_availability()
+    if probe_info:
+        print()
+        print("Quota probes:")
+        for provider, source in sorted(probe_info.items()):
+            print(f"  {provider:<8} {source}")
+
     roadmap_exists = (project_root / "ROADMAP.md").exists()
     project_exists = (project_root / "PROJECT.md").exists()
     if roadmap_exists or project_exists:
@@ -224,8 +233,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             limit = data["limit"]
             limit_str = f"/{limit:,}" if limit else "/∞"
             ratio_str = f" ({data['ratio']*100:.0f}%)" if limit else ""
-            print(f"  {provider:<8} {data['tokens_today']:>8,} tokens{limit_str}{ratio_str}"
-                  f"  ({data['calls_today']} calls)")
+            quota_str = f"{data['quota_state']} via {data['probe_source']}"
+            retry_after = f" retry_after={data['retry_after']}" if data.get("retry_after") else ""
+            print(
+                f"  {provider:<8} {data['tokens_today']:>8,} tokens{limit_str}{ratio_str}"
+                f"  ({data['calls_today']} calls)  {quota_str}{retry_after}"
+            )
 
     if state_db_path.exists():
         print()

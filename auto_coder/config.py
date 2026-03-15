@@ -11,6 +11,8 @@ CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
 STATE_DB_FILE = "state.db"
 TASKS_FILE = "tasks.yaml"
+TASKS_GENERATED_FILE = "tasks.generated.yaml"
+TASKS_LOCAL_FILE = "tasks.local.yaml"
 USAGE_FILE = "usage.json"
 REPORTS_DIR = "reports"
 
@@ -47,6 +49,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "failure_block_threshold": 3,
         "agent_timeout_minutes": 45,
         "test_timeout_minutes": 20,
+        "quota_cooldown_hours": 4,
         "stale_running_timeout_minutes": 120,
         "cleanup_worktree_older_than_days": 7,
         "cleanup_worktree_on_success": True,
@@ -67,10 +70,14 @@ def default_config(project_root: Path) -> dict[str, Any]:
             "cc":  {"token_limit_daily": 500_000, "quota_threshold": 0.90, "fallback": "cch"},
             "cch": {"token_limit_daily": None,    "quota_threshold": 1.00, "fallback": None},
         },
+        "cc_usage_command": [],
+        "ccg_usage_command": [],
         # resolved paths (not in yaml — added at load time)
         "_project_root": str(project_root),
         "_auto_coder_dir": str(acd),
         "_tasks_path": str(acd / TASKS_FILE),
+        "_tasks_generated_path": str(acd / TASKS_GENERATED_FILE),
+        "_tasks_local_path": str(acd / TASKS_LOCAL_FILE),
         "_state_path": str(acd / STATE_FILE),
         "_state_db_path": str(acd / STATE_DB_FILE),
         "_usage_path": str(acd / USAGE_FILE),
@@ -102,6 +109,8 @@ def load_config(project_root: Path | None = None) -> dict[str, Any]:
     cfg["project_root"] = project_root
     cfg["auto_coder_dir"] = Path(cfg["_auto_coder_dir"])
     cfg["tasks_path"] = Path(cfg["_tasks_path"])
+    cfg["tasks_generated_path"] = Path(cfg["_tasks_generated_path"])
+    cfg["tasks_local_path"] = Path(cfg["_tasks_local_path"])
     cfg["state_path"] = Path(cfg["_state_path"])
     cfg["state_db_path"] = Path(cfg["_state_db_path"])
     cfg["usage_path"] = Path(cfg["_usage_path"])
@@ -130,6 +139,7 @@ max_attempts_per_task_per_run: 3
 failure_block_threshold: 3
 agent_timeout_minutes: 45
 test_timeout_minutes: 20
+quota_cooldown_hours: 4
 
 # Git automation (all false = safe defaults)
 auto_commit: false
@@ -164,4 +174,8 @@ providers:
     token_limit_daily: null
     quota_threshold: 1.00
     fallback: null
+
+# Optional provider-specific quota commands
+cc_usage_command: []
+ccg_usage_command: []
 """

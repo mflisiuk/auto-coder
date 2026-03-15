@@ -31,7 +31,7 @@ from auto_coder.storage import (
     upsert_work_order,
     update_run_tick,
 )
-from auto_coder.worker import extract_token_usage, is_quota_error, run_worker
+from auto_coder.workers import build_worker_adapter
 
 RETRYABLE_STATUSES = {"agent_failed", "no_changes", "policy_failed", "tests_failed", "review_failed", "quota_exhausted"}
 
@@ -612,9 +612,9 @@ def run_one_task(
 
         # ── worker ────────────────────────────────────────────────────────────
         preferred = work_order.get("selected_worker") or task.get("preferred_provider") or config.get("default_worker", "cc")
-        provider = router.pick(preferred)
-        worker_result = run_worker(
-            provider=provider,
+        provider = router.pick(preferred, estimated_tokens=task.get("estimated_tokens"))
+        worker_adapter = build_worker_adapter(provider)
+        worker_result = worker_adapter.run(
             prompt=prompt,
             worktree=worktree,
             report_dir=report_dir,
@@ -622,15 +622,14 @@ def run_one_task(
             max_budget_usd=task.get("worker_budget_usd"),
             timeout_minutes=config["agent_timeout_minutes"],
         )
-        tokens = extract_token_usage(worker_result.stdout)
+        tokens = worker_result.token_usage
         if tokens:
             router.record(provider, tokens)
 
-        if is_quota_error(worker_result.stderr, worker_result.stdout):
+        if worker_result.quota_exhausted:
             outcome = "waiting_for_quota"
-            from datetime import timedelta
-
-            retry_after = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+            snapshot = router.mark_quota_exhausted(provider)
+            retry_after = snapshot.retry_after or _now()
             _update_runtime_state(
                 config,
                 state,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -75,15 +76,25 @@ class TestRetryFlow(unittest.TestCase):
             def fake_create_worktree(_root, worktree, _base_ref, _branch):
                 worktree.mkdir(parents=True, exist_ok=True)
 
-            def fake_run_worker(**kwargs):
-                worktree = kwargs["worktree"]
-                (worktree / "src").mkdir(parents=True, exist_ok=True)
-                (worktree / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
-                (worktree / "AGENT_REPORT.json").write_text(
-                    json.dumps({"status": "completed", "summary": "done", "completed": ["x"], "issues": [], "next": ""}),
-                    encoding="utf-8",
-                )
-                return subprocess.CompletedProcess(args=["cch"], returncode=0, stdout="", stderr="")
+            class FakeWorker:
+                def run(self, **kwargs):
+                    worktree = kwargs["worktree"]
+                    (worktree / "src").mkdir(parents=True, exist_ok=True)
+                    (worktree / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+                    (worktree / "AGENT_REPORT.json").write_text(
+                        json.dumps({"status": "completed", "summary": "done", "completed": ["x"], "issues": [], "next": ""}),
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(
+                        worker_name="cch",
+                        command=["cch"],
+                        returncode=0,
+                        stdout="",
+                        stderr="",
+                        token_usage=0,
+                        quota_exhausted=False,
+                        metadata={},
+                    )
 
             def fake_git(_repo, *args):
                 if args == ("diff",):
@@ -94,7 +105,7 @@ class TestRetryFlow(unittest.TestCase):
 
             with patch("auto_coder.orchestrator._resolve_manager_backend", return_value=_FakeManagerBackend()), \
                  patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree), \
-                 patch("auto_coder.orchestrator.run_worker", side_effect=fake_run_worker), \
+                 patch("auto_coder.orchestrator.build_worker_adapter", return_value=FakeWorker()), \
                  patch("auto_coder.orchestrator._changed_files", return_value=["src/app.py"]), \
                  patch("auto_coder.orchestrator._git", side_effect=fake_git):
                 exit_code = run_one_task(config, task, state)

@@ -29,13 +29,19 @@ tasks:
     enabled: true
     mode: safe
     priority: 10
-    max_total_attempts: 6
-    preferred_provider: cc
+    max_attempts_total: 6
+    preferred_workers:
+      - cc
+    depends_on: []
     allowed_paths:
       - src/auth/
       - tests/
-    test_commands:
+    baseline_commands:
       - python3 -m pytest tests/
+    completion_commands:
+      - python3 -m pytest tests/
+    acceptance_criteria:
+      - login flow works
     prompt: |
       Implement basic auth.
 """
@@ -99,6 +105,7 @@ class TestPlanner(unittest.TestCase):
                 tasks = planner.generate()
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0]["id"], "sprint1-auth")
+            self.assertTrue(config["tasks_generated_path"].exists())
             self.assertTrue(config["tasks_path"].exists())
 
     def test_load_tasks_returns_empty_when_no_file(self):
@@ -156,6 +163,65 @@ class TestPlanner(unittest.TestCase):
             planner = Planner(config)
             with self.assertRaises(RuntimeError):
                 planner.generate()
+
+    def test_generate_merges_local_overrides(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            config["tasks_local_path"].write_text(
+                """
+tasks:
+  - id: sprint1-auth
+    priority: 5
+    enabled: false
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            client = _mock_anthropic(SAMPLE_TASKS_YAML)
+            with patch("anthropic.Anthropic", return_value=client):
+                planner = Planner(config)
+                tasks = planner.generate()
+            self.assertEqual(tasks[0]["priority"], 5)
+            self.assertFalse(tasks[0]["enabled"])
+
+    def test_generate_preserves_stable_ids_across_replans(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            first = _mock_anthropic(SAMPLE_TASKS_YAML)
+            second = _mock_anthropic(
+                SAMPLE_TASKS_YAML.replace("id: sprint1-auth", "id: new-random-id")
+            )
+            with patch("anthropic.Anthropic", return_value=first):
+                planner = Planner(config)
+                first_tasks = planner.generate()
+            with patch("anthropic.Anthropic", return_value=second):
+                planner = Planner(config)
+                second_tasks = planner.generate()
+            self.assertEqual(first_tasks[0]["id"], second_tasks[0]["id"])
+
+    def test_generate_rejects_invalid_task_schema(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            invalid_yaml = """
+tasks:
+  - id: broken-task
+    title: Broken
+    depends_on: []
+"""
+            client = _mock_anthropic(invalid_yaml)
+            with patch("anthropic.Anthropic", return_value=client):
+                planner = Planner(config)
+                with self.assertRaises(RuntimeError):
+                    planner.generate()
 
 
 if __name__ == "__main__":

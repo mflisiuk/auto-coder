@@ -449,3 +449,44 @@ def load_manager_messages(
         return []
     messages = payload.get("messages", [])
     return list(messages) if isinstance(messages, list) else []
+
+
+def record_quota_snapshot(
+    db_path: Path,
+    *,
+    provider: str,
+    quota_state: str,
+    usage_ratio: float | None,
+    retry_after: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps({**(payload or {}), "retry_after": retry_after}, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO quota_snapshots (provider, quota_state, usage_ratio, retry_after, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (provider, quota_state, usage_ratio, retry_after, payload_json),
+        )
+        conn.commit()
+
+
+def latest_quota_snapshots(db_path: Path) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT q1.provider, q1.quota_state, q1.usage_ratio, q1.retry_after, q1.payload_json, q1.created_at
+            FROM quota_snapshots q1
+            INNER JOIN (
+                SELECT provider, MAX(id) AS max_id
+                FROM quota_snapshots
+                GROUP BY provider
+            ) q2 ON q1.provider = q2.provider AND q1.id = q2.max_id
+            ORDER BY q1.provider
+            """
+        ).fetchall()
+    return rows
