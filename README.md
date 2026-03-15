@@ -31,6 +31,9 @@ auto-coder run --live
 - [Brief validation](docs/brief-validation.md)
 - [Cron](docs/cron.md)
 - [Input pack](docs/inputs.md)
+- [Operator runbook](docs/operator-runbook.md)
+- [Go-live checklist](docs/go-live-checklist.md)
+- [Pre-mortem](docs/pre-mortem.md)
 
 ## Changelog
 [Zobacz CHANGELOG.md](CHANGELOG.md)
