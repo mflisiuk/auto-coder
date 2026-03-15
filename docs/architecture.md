@@ -1,66 +1,85 @@
-# Architektura
+# Architektura auto-coder
 
-## Struktura plików
-```
-auto-coder/
-├── auto_coder/
-│   ├── __init__.py
-│   ├── cli.py          # Interfejs linii komend
-│   ├── manager.py      # Główna pętla wykonawcza
-│   ├── router.py       # Routing providerów AI
-│   ├── validator.py    # Walidacja briefów
-│   ├── planner.py      # Synteza planera zadań
-│   └── execution/      # Moduły wykonawcze
-│       ├── __init__.py
-│       ├── core.py     # Rdzeń wykonawczy
-│       ├── sprint.py   # Obsługa sprintów
-│       └── reviewer.py # Recenzja artefaktów
-├── docs/               # Dokumentacja
-├── ROADMAP.md          # Plan produktu
-├── PROJECT.md          # Specyfikacja projektu
-├── requirements.txt    # Zależności Python
-└── .env.example        # Szablon konfiguracji
-```
+Szczegółowa architektura v1 jest opisana w [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
-## Jak działa kod
+Ten dokument to krótki operacyjny skrót.
 
-### 1. Pętla wykonawcza
-Manager działa w cyklu:
-```
-READ (ROADMAP/PROJECT) → PLAN → EXECUTE → REVIEW → COMMIT
-```
+## Model działania
 
-### 2. Routing providerów
-`ProviderRouter` wybiera dostępnego providera:
-- Sprawdza kwoty API (quota probes)
-- Wybiera primary lub fallback
-- Loguje źródło dostępności
+`auto-coder` działa tickami:
 
-### 3. Walidacja briefów
-Validator odrzuca niejasne wymagania:
-- Brak kryteriów akceptacji
-- Nieokreślony zakres
-- Brakujące zależności
+1. scheduler budzi się przez `auto-coder run`
+2. recovery czyści stare lease'y i przerwane runy
+3. planner odświeża backlog, jeśli zmienił się brief
+4. scheduler wybiera jeden gotowy task
+5. manager backend tworzy work order
+6. worker CLI wykonuje pracę w osobnym worktree
+7. reviewer odpala deterministic gates i review managera
+8. task przechodzi do `completed`, `waiting_for_retry`, `waiting_for_quota` albo `blocked`
 
-### 4. Izolacja zadań
-Każde zadanie pracuje w:
-- Osobnym git worktree
-- Izolowanym środowisku Python
-- Oddzielnym kontekście AI
+## Najważniejsze moduły
 
-## Jak rozbudować
+- `config.py`
+  Ładowanie `.auto-coder/config.yaml` i backend-specific defaults.
 
-### Dodanie nowego providera
-1. Dodaj klasę w `auto_coder/providers/`
-2. Zarejestruj w `ProviderRouter`
-3. Dodaj sondę kwotów
+- `brief_validator.py`
+  Odrzuca niejasny brief zanim planner zacznie generować backlog.
 
-### Dodanie nowego modułu wykonawczego
-1. Utwórz plik w `auto_coder/execution/`
-2. Zaimplementuj interfejs `Executor`
-3. Podłącz do orbitratora
+- `planner.py`
+  Generuje `tasks.generated.yaml`, scala `tasks.local.yaml`, waliduje DAG i syncuje taski do SQLite.
 
-### Rozszerzenie walidacji
-1. Dodaj regułę w `auto_coder/validator.py`
-2. Zaktualizuj `docs/brief-validation.md`
-3. Dodaj testy
+- `storage.py`
+  Source of truth w SQLite: taski, work orders, attempts, run ticks, leases, manager threads.
+
+- `scheduler.py`
+  Wybór taska do uruchomienia z uwzględnieniem zależności, retry i cooldownów.
+
+- `orchestrator.py`
+  Jeden tick end-to-end.
+
+- `reviewer.py`
+  Deterministic review + handoff do manager backendu.
+
+- `managers/`
+  Obsługiwane backendy managera:
+  - `anthropic`
+  - `codex` przez bridge Node -> `codex exec`
+
+- `workers/`
+  Adaptery CLI dla agentów kodujących.
+
+- `quota/` i `router.py`
+  Probe'y usage, fallback providerów i `waiting_for_quota`.
+
+## Source of truth
+
+Metadane runtime idą do SQLite:
+
+- task runtime
+- attempts
+- run ticks
+- leases
+- manager thread state
+- work orders
+
+Duże artefakty trafiają do `.auto-coder/reports/`.
+
+## Stany taska
+
+- `queued`
+- `ready`
+- `leased`
+- `running`
+- `waiting_for_retry`
+- `waiting_for_quota`
+- `blocked`
+- `completed`
+
+## Zasady bezpieczeństwa
+
+- worktree per attempt
+- allowed/protected path policy
+- obowiązkowe `completion_commands`
+- obowiązkowy `AGENT_REPORT.json`
+- `quota_exhausted` nie jest zwykłym failure
+- auto-merge jest wyłączony domyślnie

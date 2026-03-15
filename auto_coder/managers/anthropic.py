@@ -88,10 +88,10 @@ class AnthropicManagerBackend(ManagerBackend):
             source=self.name(),
         )
 
-    def load_thread(self, task_id: str) -> list[dict[str, Any]]:
+    def load_thread(self, task_id: str) -> dict[str, Any] | None:
         if task_id != self.task_id:
-            return []
-        return list(self._brain.messages)
+            return None
+        return {"external_thread_id": None, "messages": list(self._brain.messages)}
 
     def save_thread(self, task_id: str, thread_state: list[dict[str, Any]]) -> None:
         if task_id != self.task_id:

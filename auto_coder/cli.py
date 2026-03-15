@@ -82,13 +82,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print()
 
     import subprocess
+    from auto_coder.git_ops import resolve_worktree_base_ref
     checks: dict[str, bool] = {}
-    checks["ANTHROPIC_API_KEY set"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
     checks["git available"] = shutil.which("git") is not None
     checks["git remote reachable"] = subprocess.run(
         ["git", "remote", "-v"], cwd=str(project_root), capture_output=True
     ).returncode == 0
     checks["state.db present"] = config["state_db_path"].exists()
+    try:
+        resolved_base_ref = resolve_worktree_base_ref(
+            project_root,
+            config.get("worktree_base_ref"),
+            str(config.get("base_branch", "main")),
+        )
+        checks[f"worktree base ref ({resolved_base_ref})"] = True
+    except RuntimeError:
+        checks["worktree base ref"] = False
+    manager_backend = str(config.get("manager_backend", "anthropic")).strip().lower()
+    if manager_backend == "anthropic":
+        checks["manager:anthropic key"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    elif manager_backend == "codex":
+        checks["manager:codex cli"] = shutil.which("codex") is not None
+        checks["manager:node"] = shutil.which("node") is not None
 
     workers = ["cc", "cch", "ccg", "codex"]
     for w in workers:
@@ -141,10 +156,6 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"FAIL: {exc}")
         return 1
 
-    if not Planner.is_available():
-        print("FAIL: ANTHROPIC_API_KEY not set.")
-        return 1
-
     roadmap_path = project_root / "ROADMAP.md"
     if not roadmap_path.exists():
         print(f"FAIL: ROADMAP.md not found in {project_root}")
@@ -160,6 +171,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     print(f"Reading {roadmap_path} ...")
     planner = Planner(config)
+    if not planner.backend_available():
+        print(f"FAIL: manager backend unavailable for planning ({config.get('manager_backend')}).")
+        return 1
     try:
         tasks = planner.generate()
     except Exception as exc:
@@ -269,8 +283,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # auto-refresh tasks if ROADMAP changed
     from auto_coder.planner import Planner
-    if Planner.is_available():
-        planner = Planner(config)
+    planner = Planner(config)
+    if planner.backend_available():
         try:
             refreshed = planner.refresh_if_changed()
         except Exception as exc:
@@ -312,6 +326,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run_batch(config, tasks, state)
 
 
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Import a legacy tasks YAML file into tasks.local.yaml."""
+    from auto_coder.migrate import migrate_legacy_tasks
+
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    source = Path(args.source).resolve()
+    try:
+        tasks = migrate_legacy_tasks(config, source)
+    except Exception as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    print(f"Imported {len(tasks)} task(s) into {config['tasks_local_path']}")
+    print("Run: auto-coder plan")
+    return 0
+
+
 # ═══════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -342,6 +379,9 @@ def main() -> None:
     p_run.add_argument("--dry-run", action="store_true", dest="dry_run",
                        help="Force dry run (overrides config)")
 
+    p_migrate = sub.add_parser("migrate", help="Import a legacy tasks.yaml into tasks.local.yaml")
+    p_migrate.add_argument("source", help="Path to legacy YAML file with top-level tasks:")
+
     args = parser.parse_args()
 
     handlers = {
@@ -350,5 +390,6 @@ def main() -> None:
         "plan": cmd_plan,
         "status": cmd_status,
         "run": cmd_run,
+        "migrate": cmd_migrate,
     }
     sys.exit(handlers[args.command](args))

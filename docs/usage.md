@@ -1,77 +1,132 @@
-# Jak używać
+# Jak używać auto-coder
 
-## Podstawowe użycie
+## Standardowy flow
 
-### Uruchomienie managera
+### 1. Przygotuj brief
+
+W repo projektu utrzymuj aktualne:
+
+- `ROADMAP.md`
+- `PROJECT.md`
+- opcjonalnie `CONSTRAINTS.md`
+- opcjonalnie `ARCHITECTURE_NOTES.md`
+
+### 2. Wygeneruj backlog
+
 ```bash
-python -m auto_coder.manager --tick-interval 15
+auto-coder doctor
+auto-coder plan
 ```
 
-Manager będzie cyklicznie:
-1. Czytał ROADMAP.md i PROJECT.md
-2. Generował zadania
-3. Wybierał wykonawców
-4. Uruchamiał pracę w izolowanym środowisku
-5. Recenzował wyniki
-6. Commitował gotową pracę
+`plan`:
 
-### Tryb jednorazowy
+- waliduje brief
+- odpala manager backend
+- zapisuje `.auto-coder/tasks.generated.yaml`
+- scala lokalne override'y z `.auto-coder/tasks.local.yaml`
+- zapisuje wynik do `.auto-coder/tasks.yaml`
+- synchronizuje taski do SQLite
+
+### 3. Podejrzyj status
+
 ```bash
-python -m auto_coder.manager --once
+auto-coder status
 ```
 
-### Walidacja briefów
+Status pokazuje:
+
+- task runtime w SQLite
+- licznik prób
+- provider usage
+- quota state i `retry_after`
+
+### 4. Wykonaj jeden tick
+
 ```bash
-python -m auto_coder.validator --brief path/to/brief.md
+auto-coder run --dry-run
+auto-coder run --live
 ```
 
-System odrzuci niejasne wymagania i zwróci listę braków.
+`run` robi jeden pełny tick:
 
-## Przykłady użycia
+- recovery po przerwanych runach
+- wybór taska przez scheduler
+- utworzenie worktree
+- uruchomienie workera
+- policy checks
+- testy
+- review i zapis attemptu
+- opcjonalny commit/push
 
-### Przykład 1: Nowy feature z roadmapy
-1. Dodaj wpis do ROADMAP.md:
-```markdown
-## Q1 2026
-- [ ] System powiadomień email
-```
+## Praca codzienna
 
-2. Uruchom managera:
+### Gdy zmieniasz brief
+
+Po zmianie `ROADMAP.md` albo `PROJECT.md`:
+
 ```bash
-python -m auto_coder.manager --once
+auto-coder plan
+auto-coder status
 ```
 
-3. Sprawdź status:
+`auto-coder run` i tak spróbuje zrobić `refresh_if_changed()`, ale jawne `plan` jest lepsze do kontroli.
+
+### Gdy chcesz odpalić tylko jeden task
+
 ```bash
-python -m auto_coder.cli status
+auto-coder run --task task-id --dry-run
+auto-coder run --task task-id --live
 ```
 
-### Przykład 2: Debugowanie konfiguracji
+### Gdy migrujesz stary backlog
+
 ```bash
-# Sprawdź status systemu
-python -m auto_coder.cli doctor
-
-# Wyświetl dostępne zadania
-python -m auto_coder.cli list
-
-# Sprawdź postępy
-python -m auto_coder.cli status
+auto-coder migrate ./legacy-tasks.yaml
+auto-coder plan
 ```
 
-### Przykład 3: Praca z istniejącym projektem
-```bash
-# Skonfiguruj ścieżkę do projektu
-export PROJECT_ROOT=/path/to/existing/project
+To importuje taski do `.auto-coder/tasks.local.yaml`.
 
-# Uruchom z istniejącą dokumentacją
-python -m auto_coder.manager --tick-interval 30
-```
+## Jak czytać wyniki
 
-## Komendy CLI
+### `completed`
 
-| Komenda | Opis |
-|---------|------|
-| `doctor` | Diagnoza systemu i providerów |
-| `status` | Status bieżących zadań |
-| `list` | Lista zadań |
-| `validate` | Walidacja briefu |
+Task przeszedł:
+
+- allowed/protected path policy
+- completion commands
+- deterministic review
+- manager review
+
+### `waiting_for_retry`
+
+Task jest naprawialny i wróci w kolejnym ticku z feedbackiem.
+
+### `waiting_for_quota`
+
+Provider wszedł w limit albo zwrócił `429`. Task nie jest traktowany jako zwykła porażka.
+
+### `blocked`
+
+Task nie robi postępu albo wymaga zmiany briefu, testów albo polityki projektu.
+
+## Artefakty runtime
+
+W `.auto-coder/` znajdziesz:
+
+- `state.db` — source of truth
+- `tasks.generated.yaml` — backlog z managera
+- `tasks.local.yaml` — lokalne override'y
+- `tasks.yaml` — efektywny backlog
+- `reports/` — logi runów, testów, diffów i raportów workerów
+- `worktrees/` — tymczasowe repo dla prób
+
+## Tryb unattended
+
+`auto-coder` nie ma własnego demona. Odpalasz go tickami:
+
+- przez `cron`
+- przez `systemd` timer
+- przez zewnętrzny scheduler CI / VM
+
+Przykłady są w `docs/cron.md`.

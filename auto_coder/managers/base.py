@@ -46,7 +46,7 @@ class ManagerBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_thread(self, task_id: str) -> list[dict[str, Any]]:
+    def load_thread(self, task_id: str) -> dict[str, Any] | None:
         raise NotImplementedError
 
     @abstractmethod

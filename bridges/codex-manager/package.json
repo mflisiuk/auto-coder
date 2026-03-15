@@ -1,0 +1,10 @@
+{
+  "name": "auto-coder-codex-manager-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bridge process for auto-coder Codex manager backend",
+  "scripts": {
+    "run": "node src/index.mjs"
+  }
+}

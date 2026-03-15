@@ -5,17 +5,14 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import subprocess
-import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from auto_coder.config import find_project_root, load_config
-from auto_coder.manager import AttemptResult, ManagerBrain, ManagerDecision
 from auto_coder.managers.anthropic import AnthropicManagerBackend
+from auto_coder.managers.codex_bridge import CodexManagerBridge
 from auto_coder.prompts.worker_instruction import build_worker_prompt
 from auto_coder.reviewer import review_attempt
 from auto_coder.router import ProviderRouter
@@ -26,6 +23,7 @@ from auto_coder.storage import (
     list_attempts_for_task,
     list_work_orders_for_task,
     record_attempt,
+    recover_interrupted_runs,
     release_lease,
     set_task_runtime,
     upsert_work_order,
@@ -348,9 +346,11 @@ def _update_runtime_state(
 
 from auto_coder.executor import run_tests as _run_tests_impl
 from auto_coder.git_ops import changed_files as _changed_files_impl
+from auto_coder.git_ops import cleanup_worktrees as _cleanup_worktrees_impl
 from auto_coder.git_ops import create_worktree as _create_worktree_impl
 from auto_coder.git_ops import git as _git_impl
 from auto_coder.git_ops import remove_worktree as _remove_worktree_impl
+from auto_coder.git_ops import resolve_worktree_base_ref as _resolve_worktree_base_ref_impl
 from auto_coder.policy import validate_changed_files as _validate_changed_files_impl
 from auto_coder.reports import ensure_dir as _ensure_impl
 from auto_coder.reports import load_json as _load_json_impl
@@ -369,7 +369,9 @@ _write = _write_impl
 _read = _read_impl
 _git = _git_impl
 _changed_files = _changed_files_impl
+_cleanup_worktrees = _cleanup_worktrees_impl
 _create_worktree = _create_worktree_impl
+_resolve_worktree_base_ref = _resolve_worktree_base_ref_impl
 validate_changed_files = _validate_changed_files_impl
 run_tests = _run_tests_impl
 should_retry = _should_retry_impl
@@ -421,20 +423,37 @@ def _load_history_for_task(config: dict[str, Any], task_id: str) -> list[dict[st
     return history
 
 
-def _resolve_manager_backend(config: dict[str, Any], task: dict[str, Any]) -> AnthropicManagerBackend | None:
+def _resolve_manager_backend(config: dict[str, Any], task: dict[str, Any]):
     if not config.get("manager_enabled", True):
         return None
     backend_name = str(config.get("manager_backend", "anthropic")).strip().lower()
-    if backend_name != "anthropic":
-        raise RuntimeError(f"Manager backend not implemented yet: {backend_name}")
-    if not AnthropicManagerBackend.is_available():
-        return None
-    return AnthropicManagerBackend(
-        task_id=str(task["id"]),
-        task=task,
-        config=config,
-        state_path=config["state_path"],
+    backend_cls = {
+        "anthropic": AnthropicManagerBackend,
+        "codex": CodexManagerBridge,
+    }.get(backend_name)
+    if backend_cls is None:
+        raise RuntimeError(f"Unsupported manager backend: {backend_name}")
+    if not backend_cls.is_available():
+        raise RuntimeError(f"Manager backend unavailable: {backend_name}")
+    return backend_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+
+def _recover_runtime(config: dict[str, Any], state: dict[str, Any]) -> dict[str, list[str]]:
+    if not config.get("state_db_path"):
+        return {"run_tick_ids": [], "task_ids": [], "work_order_ids": []}
+    recovered = recover_interrupted_runs(config["state_db_path"])
+    for task_id in recovered.get("task_ids", []):
+        state.setdefault("tasks", {}).setdefault(task_id, {})
+        state["tasks"][task_id]["status"] = "waiting_for_retry"
+        state["tasks"][task_id]["note"] = "Recovered from interrupted run."
+    cleanup_names = set(recovered.get("run_tick_ids", []))
+    _cleanup_worktrees(
+        config["project_root"],
+        config["worktree_root"],
+        remove_names=cleanup_names,
+        older_than_days=int(config.get("cleanup_worktree_older_than_days", 7)),
     )
+    return recovered
 
 
 def _prepare_work_order(
@@ -554,16 +573,23 @@ def run_one_task(
         task_id=task_id,
         run_id=run_id,
         status="running",
+        task_status="running",
+        attempt_status="started",
         branch=branch,
         report_dir=report_dir,
         note="Run started.",
         extra={"attempt_count": attempt_count},
         work_order_id=work_order_id,
-        work_order_status="selected",
+        work_order_status="running",
     )
 
     try:
-        _create_worktree(project_root, worktree, config.get("worktree_base_ref", config["base_branch"]), branch)
+        base_ref = _resolve_worktree_base_ref(
+            project_root,
+            config.get("worktree_base_ref"),
+            str(config.get("base_branch", "main")),
+        )
+        _create_worktree(project_root, worktree, base_ref, branch)
 
         if config.get("dry_run"):
             outcome = "dry_run"
@@ -943,6 +969,7 @@ def run_one_task(
 def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
     exit_code = 0
     with _file_lock(config["lock_path"]):
+        _recover_runtime(config, state)
         max_tasks = max(1, int(config.get("max_tasks_per_run", 1)))
         processed = 0
         attempted_ids: set[str] = set()

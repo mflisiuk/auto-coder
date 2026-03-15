@@ -17,6 +17,10 @@ USAGE_FILE = "usage.json"
 REPORTS_DIR = "reports"
 
 SUPPORTED_WORKERS = {"cc", "cch", "ccg", "codex", "qwen", "gemini"}
+DEFAULT_MANAGER_MODELS = {
+    "anthropic": "claude-opus-4-6",
+    "codex": "gpt-5",
+}
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -33,6 +37,24 @@ def find_project_root(start: Path | None = None) -> Path:
 
 def auto_coder_dir(project_root: Path) -> Path:
     return project_root / AUTO_CODER_DIR
+
+
+def resolve_manager_model(
+    manager_backend: str,
+    configured_model: str | None,
+) -> str:
+    backend = str(manager_backend or "anthropic").strip().lower()
+    default_model = DEFAULT_MANAGER_MODELS.get(backend, DEFAULT_MANAGER_MODELS["anthropic"])
+    if not configured_model:
+        return default_model
+    configured = str(configured_model).strip()
+    if not configured:
+        return default_model
+    # Preserve seamless switching from the generated config template: if the user
+    # only flips the backend to Codex, replace the Anthropic default automatically.
+    if backend == "codex" and configured == DEFAULT_MANAGER_MODELS["anthropic"]:
+        return DEFAULT_MANAGER_MODELS["codex"]
+    return configured
 
 
 def default_config(project_root: Path) -> dict[str, Any]:
@@ -60,7 +82,8 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "review_required": True,
         "manager_enabled": True,
         "manager_backend": "anthropic",
-        "manager_model": "claude-opus-4-6",
+        "manager_model": DEFAULT_MANAGER_MODELS["anthropic"],
+        "codex_reasoning_effort": "medium",
         "default_worker": "cc",
         "fallback_worker": "cch",
         "allowed_paths": [],
@@ -106,6 +129,10 @@ def load_config(project_root: Path | None = None) -> dict[str, Any]:
             cfg[k] = v
 
     # resolve Path objects for convenience
+    cfg["manager_model"] = resolve_manager_model(
+        cfg.get("manager_backend", "anthropic"),
+        cfg.get("manager_model"),
+    )
     cfg["project_root"] = project_root
     cfg["auto_coder_dir"] = Path(cfg["_auto_coder_dir"])
     cfg["tasks_path"] = Path(cfg["_tasks_path"])
@@ -150,7 +177,8 @@ auto_merge: false
 review_required: true
 manager_enabled: true
 manager_backend: anthropic
-manager_model: claude-opus-4-6
+manager_model: ""        # empty = backend-specific default (anthropic=claude-opus-4-6, codex=gpt-5)
+codex_reasoning_effort: medium
 
 # Default worker CLI and fallback
 default_worker: cc

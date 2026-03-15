@@ -104,6 +104,7 @@ class TestRetryFlow(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["git", *args], returncode=0, stdout="", stderr="")
 
             with patch("auto_coder.orchestrator._resolve_manager_backend", return_value=_FakeManagerBackend()), \
+                 patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
                  patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree), \
                  patch("auto_coder.orchestrator.build_worker_adapter", return_value=FakeWorker()), \
                  patch("auto_coder.orchestrator._changed_files", return_value=["src/app.py"]), \
@@ -118,8 +119,9 @@ class TestRetryFlow(unittest.TestCase):
             self.assertIsNotNone(latest_work_order)
             self.assertEqual(latest_work_order["status"], "queued")
             attempts = list_attempts_for_task(config["state_db_path"], "task-1")
-            self.assertEqual(len(attempts), 1)
-            self.assertEqual(attempts[0]["status"], "review_failed")
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(attempts[0]["status"], "started")
+            self.assertEqual(attempts[-1]["status"], "review_failed")
 
 
 if __name__ == "__main__":

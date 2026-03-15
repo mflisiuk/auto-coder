@@ -1,5 +1,6 @@
 """Tests for Planner: generate_backlog, hash-based change detection."""
 from __future__ import annotations
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -222,6 +223,43 @@ tasks:
                 planner = Planner(config)
                 with self.assertRaises(RuntimeError):
                     planner.generate()
+
+    def test_generate_can_use_codex_backend(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            config["manager_backend"] = "codex"
+            response_payload = {
+                "ok": True,
+                "result": {
+                    "tasks": [
+                        {
+                            "id": "sprint1-auth",
+                            "title": "Add auth module",
+                            "enabled": True,
+                            "mode": "safe",
+                            "priority": 10,
+                            "max_attempts_total": 6,
+                            "preferred_workers": ["codex"],
+                            "depends_on": [],
+                            "allowed_paths": ["src/auth/", "tests/"],
+                            "baseline_commands": ["python3 -m pytest tests/"],
+                            "completion_commands": ["python3 -m pytest tests/"],
+                            "acceptance_criteria": ["login flow works"],
+                            "prompt": "Implement basic auth."
+                        }
+                    ]
+                }
+            }
+            with patch("subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = json.dumps(response_payload)
+                run.return_value.stderr = ""
+                planner = Planner(config)
+                tasks = planner.generate()
+            self.assertEqual(tasks[0]["preferred_workers"], ["codex"])
 
 
 if __name__ == "__main__":

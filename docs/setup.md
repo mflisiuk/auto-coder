@@ -1,70 +1,156 @@
 # Instalacja i konfiguracja
 
 ## Wymagania
-- Python 3.9+
-- Git
-- Dostęp do providerów AI (Anthropic Claude, OpenAI GPT, lub lokalne modele)
 
-## Instalacja krok po kroku
+- Python `>=3.11`
+- Git `>=2.23`
+- jeden manager backend:
+  - Anthropic SDK z `ANTHROPIC_API_KEY`, albo
+  - `codex` CLI + `node`
+- co najmniej jeden worker CLI, którego chcesz używać, np. `cc`, `cch`, `ccg`, `codex`
 
-### 1. Klonowanie repozytorium
+## Instalacja pakietu
+
 ```bash
-git clone https://github.com/auto-coder/auto-coder.git
+git clone <repo-z-auto-coderem>
 cd auto-coder
+pip install -e .
 ```
 
-### 2. Instalacja zależności
-```bash
-pip install -r requirements.txt
-```
+## Inicjalizacja repo projektu
 
-### 3. Konfiguracja środowiska
-```bash
-cp .env.example .env
-```
-
-Edytuj plik `.env` i ustaw wymagane zmienne:
+W repo, które ma być rozwijane przez auto-coder:
 
 ```bash
-# Provider AI (wybierz jeden)
-ANTHROPIC_API_KEY=sk-ant-...
-# LUB
-OPENAI_API_KEY=sk-...
-# LUB
-LOCAL_MODEL_URL=http://localhost:11434
-
-# Konfiguracja projektu
-PROJECT_ROOT=/path/to/your/project
-USAGE_PATH=/path/to/usage.json
-
-# Opcjonalne
-TICK_INTERVAL=15  # Interwał pętli wykonawczej w minutach
+auto-coder init
 ```
 
-### 4. Weryfikacja instalacji
-```bash
-python -m auto_coder.cli doctor
-```
+To tworzy `.auto-coder/config.yaml` i `.auto-coder/state.db`.
 
-Komenda `doctor` sprawdzi:
-- Dostępność plików konfiguracyjnych
-- Status providerów AI (sondy kwotów)
-- Istnienie ROADMAP.md i PROJECT.md
-- Poprawność środowiska
+Repo powinno mieć już co najmniej jeden commit. Worktree execution nie ruszy na pustym repo bez `HEAD`.
 
-## Konfiguracja zaawansowana
+## Minimalny wsad wejściowy
 
-### Wielu providerów
-System obsługuje routing do wielu providerów. Dodaj w `.env`:
+W katalogu repo muszą istnieć:
+
+- `ROADMAP.md`
+- `PROJECT.md`
+
+Opcjonalnie:
+
+- `CONSTRAINTS.md`
+- `ARCHITECTURE_NOTES.md`
+
+Dokładny kontrakt wejścia:
+
+- `INPUT_SPEC.md`
+- `docs/inputs.md`
+- `example-project/`
+
+## Konfiguracja managera
+
+### Anthropic
 
 ```bash
-PRIMARY_PROVIDER=anthropic
-FALLBACK_PROVIDER=openai
+export ANTHROPIC_API_KEY=...
 ```
 
-### Izolowane środowisko
-Każde zadanie pracuje w osobnym git worktree:
+`config.yaml`:
+
+```yaml
+manager_backend: anthropic
+manager_model: ""
+default_worker: cc
+fallback_worker: cch
+```
+
+### Codex
+
+Wymagania:
+
+- zainstalowany `codex`
+- zainstalowany `node`
+- działające logowanie w Codex CLI
+
+`config.yaml`:
+
+```yaml
+manager_backend: codex
+manager_model: ""
+codex_reasoning_effort: medium
+default_worker: codex
+fallback_worker: cch
+```
+
+Pusty `manager_model` oznacza backend-specific default:
+
+- `anthropic` -> `claude-opus-4-6`
+- `codex` -> `gpt-5`
+
+## Typowa konfiguracja Git automation
+
+Bezpieczny start:
+
+```yaml
+dry_run: true
+auto_commit: false
+auto_push: false
+auto_merge: false
+```
+
+Później możesz przełączyć na:
+
+```yaml
+dry_run: false
+auto_commit: true
+auto_push: true
+auto_merge: false
+```
+
+## Weryfikacja środowiska
 
 ```bash
-WORKTREE_BASE=/tmp/auto-coder-worktrees
+auto-coder doctor
 ```
+
+Doctor sprawdza:
+
+- dostępność `git`
+- obecność `state.db`
+- dostępność manager backendu
+- dostępność znanych workerów
+- brief validation dla `ROADMAP.md` i `PROJECT.md`
+- quota probes, jeśli są skonfigurowane
+
+## Pierwsze uruchomienie
+
+```bash
+auto-coder plan
+auto-coder status
+auto-coder run --dry-run
+```
+
+Jeśli preview wygląda dobrze:
+
+```bash
+auto-coder run --live
+```
+
+## Najczęstsze problemy
+
+### `FAIL: manager backend unavailable`
+
+- dla Anthropic ustaw `ANTHROPIC_API_KEY`
+- dla Codexa zainstaluj `codex` i `node`
+- sprawdź `manager_backend` w `.auto-coder/config.yaml`
+
+### `FAIL: brief niejasny`
+
+- uzupełnij brakujące sekcje wskazane przez walidator
+- dodaj konkretne komendy testowe i policy ścieżek do `PROJECT.md`
+
+### `quota_exhausted`
+
+- poczekaj do `retry_after`
+- zmień fallback worker w `providers`
+- skróć work ordery albo obniż częstotliwość ticków

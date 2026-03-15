@@ -1,45 +1,74 @@
 # Walidacja briefów
 
-## Zasady walidacji
-Brief musi zawierać:
-- [ ] Jasno określony cel
-- [ ] Kryteria akceptacji
-- [ ] Zakres funkcjonalny
-- [ ] Zależności zewnętrzne
+`auto-coder` planuje tylko wtedy, gdy brief jest wystarczająco konkretny do wygenerowania mierzalnych tasków.
 
-## Przykłady
+Jeśli brief jest zbyt luźny, planning jest odrzucany komunikatem w stylu:
 
-### ✅ Poprawny brief
-```markdown
-# Feature: Logowanie przez OAuth2
-
-## Cel
-Umożliwić użytkownikom logowanie przez Google i GitHub.
-
-## Kryteria akceptacji
-- Przycisk "Zaloguj przez Google"
-- Przycisk "Zaloguj przez GitHub"
-- Redirect po autoryzacji
-
-## Zakres
-- Frontend: przyciski logowania
-- Backend: integracja OAuth2
+```text
+brief niejasny - missing sections: ROADMAP.md::Acceptance Criteria, PROJECT.md::Commands
 ```
 
-### ❌ Niepoprawny brief
-```markdown
-# Feature: Lepsze logowanie
+## Co jest wymagane
 
-## Cel
-Ulepszyć proces logowania.
-```
+### `ROADMAP.md`
 
-**Braki:**
-- Nieokreślone "lepsze"
-- Brak kryteriów akceptacji
-- Niejasny zakres
+Wymagane sekcje:
 
-## Komenda walidacji
+- `Project Goal`
+- `Target User`
+- `Ordered Milestones`
+- `In Scope`
+- `Out of Scope`
+- `Acceptance Criteria`
+
+### `PROJECT.md`
+
+Wymagane sekcje:
+
+- `Tech Stack`
+- `Repo Structure`
+- `Commands`
+- `Editable Paths`
+- `Protected Paths`
+- `Environment Assumptions`
+
+## Co jeszcze sprawdza walidator
+
+- czy `PROJECT.md::Commands` zawiera deterministyczną komendę testową
+- czy polityka ścieżek ma konkretne wpisy
+- czy w briefie nie ma markerów typu `tbd`, `todo`, `later`, `maybe`
+
+## Jak to uruchomić
+
+Najprościej przez:
+
 ```bash
-python -m auto_coder.validator --brief brief.md
+auto-coder doctor
+auto-coder plan
 ```
+
+Obie komendy pokażą błąd walidacji, jeśli brief nie przechodzi.
+
+## Typowe powody odrzucenia
+
+- brak `ROADMAP.md`
+- brak `PROJECT.md`
+- brak sekcji `Commands`
+- brak sekcji `Editable Paths` / `Protected Paths`
+- brak acceptance criteria
+- brak deterministycznej komendy testowej
+- niejednoznaczne markery w stylu `todo`, `somehow`, `maybe`
+
+## Jak powinien wyglądać dobry brief
+
+Dobry brief pozwala plannerowi bez zgadywania wyprowadzić:
+
+- kolejność prac
+- zakres ścieżek do zmian
+- komendy bazowe i końcowe
+- acceptance criteria per task
+
+Referencja:
+
+- `INPUT_SPEC.md`
+- `example-project/`

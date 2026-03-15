@@ -406,19 +406,27 @@ def save_manager_messages(
     task_id: str,
     manager_backend: str,
     messages: list[dict],
+    external_thread_id: str | None = None,
     thread_key: str = "default",
 ) -> None:
     ensure_database(db_path)
     with connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO manager_threads (task_id, manager_backend, thread_key, state_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO manager_threads (task_id, manager_backend, thread_key, external_thread_id, state_json)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(task_id, manager_backend, thread_key) DO UPDATE SET
+                external_thread_id = excluded.external_thread_id,
                 state_json = excluded.state_json,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (task_id, manager_backend, thread_key, json.dumps({"messages": messages}, ensure_ascii=False)),
+            (
+                task_id,
+                manager_backend,
+                thread_key,
+                external_thread_id,
+                json.dumps({"messages": messages}, ensure_ascii=False),
+            ),
         )
         conn.commit()
 
@@ -449,6 +457,37 @@ def load_manager_messages(
         return []
     messages = payload.get("messages", [])
     return list(messages) if isinstance(messages, list) else []
+
+
+def load_manager_thread(
+    db_path: Path,
+    *,
+    task_id: str,
+    manager_backend: str,
+    thread_key: str = "default",
+) -> dict[str, object] | None:
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT external_thread_id, state_json, updated_at
+            FROM manager_threads
+            WHERE task_id = ? AND manager_backend = ? AND thread_key = ?
+            """,
+            (task_id, manager_backend, thread_key),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(str(row["state_json"]))
+    except Exception:
+        payload = {}
+    return {
+        "external_thread_id": row["external_thread_id"],
+        "messages": list(payload.get("messages", [])) if isinstance(payload.get("messages", []), list) else [],
+        "updated_at": row["updated_at"],
+    }
 
 
 def record_quota_snapshot(
@@ -490,3 +529,128 @@ def latest_quota_snapshots(db_path: Path) -> list[sqlite3.Row]:
             """
         ).fetchall()
     return rows
+
+
+def expire_stale_leases(db_path: Path) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, resource_type, resource_id, run_tick_id, expires_at
+            FROM leases
+            WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')
+            """
+        ).fetchall()
+        conn.execute("DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')")
+        conn.commit()
+    return rows
+
+
+def recover_interrupted_runs(db_path: Path) -> dict[str, list[str]]:
+    """Mark stale in-flight runtime records as interrupted before a new tick starts."""
+    ensure_database(db_path)
+    stale_run_ids: list[str] = []
+    stale_task_ids: list[str] = []
+    stale_work_order_ids: list[str] = []
+
+    expired_leases = expire_stale_leases(db_path)
+    stale_run_ids.extend(str(row["run_tick_id"]) for row in expired_leases if row["run_tick_id"])
+
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, payload_json
+            FROM run_ticks
+            WHERE status IN ('started', 'running')
+            """
+        ).fetchall()
+        for row in rows:
+            run_id = str(row["id"])
+            if run_id not in stale_run_ids:
+                stale_run_ids.append(run_id)
+            try:
+                payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+            except Exception:
+                payload = {}
+            task_id = payload.get("task_id")
+            work_order_id = payload.get("work_order_id")
+            if task_id and task_id not in stale_task_ids:
+                stale_task_ids.append(str(task_id))
+            if work_order_id and work_order_id not in stale_work_order_ids:
+                stale_work_order_ids.append(str(work_order_id))
+
+        if stale_run_ids:
+            conn.executemany(
+                """
+                UPDATE run_ticks
+                SET status = 'interrupted', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                [(run_id,) for run_id in stale_run_ids],
+            )
+            conn.executemany(
+                """
+                UPDATE attempts
+                SET status = 'interrupted', updated_at = CURRENT_TIMESTAMP
+                WHERE run_tick_id = ? AND status = 'started'
+                """,
+                [(run_id,) for run_id in stale_run_ids],
+            )
+
+        if stale_task_ids:
+            task_rows = conn.execute(
+                f"""
+                SELECT id, title, priority, payload_json
+                FROM tasks
+                WHERE id IN ({",".join("?" for _ in stale_task_ids)})
+                """,
+                stale_task_ids,
+            ).fetchall()
+            for row in task_rows:
+                try:
+                    payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+                except Exception:
+                    payload = {}
+                payload["note"] = "Recovered from interrupted run."
+                payload["updated_at"] = "recovered"
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'waiting_for_retry', payload_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (json.dumps(payload, ensure_ascii=False), str(row["id"])),
+                )
+
+        if stale_work_order_ids:
+            rows = conn.execute(
+                f"""
+                SELECT id, payload_json
+                FROM work_orders
+                WHERE id IN ({",".join("?" for _ in stale_work_order_ids)})
+                """,
+                stale_work_order_ids,
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+                except Exception:
+                    payload = {}
+                payload["recovered"] = True
+                conn.execute(
+                    """
+                    UPDATE work_orders
+                    SET status = 'retry_pending', payload_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (json.dumps(payload, ensure_ascii=False), str(row["id"])),
+                )
+
+        conn.commit()
+
+    return {
+        "run_tick_ids": stale_run_ids,
+        "task_ids": stale_task_ids,
+        "work_order_ids": stale_work_order_ids,
+    }

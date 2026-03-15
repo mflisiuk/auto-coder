@@ -64,6 +64,27 @@ class TestLoadConfig(unittest.TestCase):
             self.assertIsInstance(config["reports_root"], Path)
             self.assertIsInstance(config["worktree_root"], Path)
 
+    def test_codex_backend_uses_backend_default_model(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir()
+            (acd / "config.yaml").write_text("manager_backend: codex\n", encoding="utf-8")
+            config = load_config(root)
+            self.assertEqual(config["manager_model"], "gpt-5")
+
+    def test_codex_backend_rewrites_template_default_model(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir()
+            (acd / "config.yaml").write_text(
+                "manager_backend: codex\nmanager_model: claude-opus-4-6\n",
+                encoding="utf-8",
+            )
+            config = load_config(root)
+            self.assertEqual(config["manager_model"], "gpt-5")
+
 
 if __name__ == "__main__":
     unittest.main()

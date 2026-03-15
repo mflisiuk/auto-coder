@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +46,14 @@ class Planner:
     @classmethod
     def is_available(cls) -> bool:
         return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+    def backend_available(self) -> bool:
+        backend = str(self.config.get("manager_backend", "anthropic")).strip().lower()
+        if backend == "anthropic":
+            return bool(os.environ.get("ANTHROPIC_API_KEY"))
+        if backend == "codex":
+            return shutil.which("codex") is not None and shutil.which("node") is not None
+        return False
 
     def refresh_if_changed(self) -> bool:
         """Regenerate effective tasks when any planning input changes."""
@@ -102,9 +114,6 @@ class Planner:
         constraints: str,
         architecture_notes: str,
     ) -> list[dict[str, Any]]:
-        import anthropic
-
-        client = anthropic.Anthropic()
         user_msg = PLANNER_USER_TEMPLATE.format(
             project_context=project_context or "(no PROJECT.md provided)",
             constraints=constraints or "(none)",
@@ -112,21 +121,78 @@ class Planner:
             roadmap=roadmap,
             schema=TASKS_SCHEMA_DESCRIPTION,
         )
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=PLANNER_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        raw_yaml = response.content[0].text.strip()
-        if raw_yaml.startswith("```"):
-            lines = raw_yaml.splitlines()
-            raw_yaml = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
-        parsed = yaml.safe_load(raw_yaml) or {}
+        backend = str(self.config.get("manager_backend", "anthropic")).strip().lower()
+        if backend == "codex":
+            parsed = self._call_codex_bridge(
+                roadmap=roadmap,
+                project_context=project_context,
+                constraints=constraints,
+                architecture_notes=architecture_notes,
+            )
+        else:
+            import anthropic
+
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=PLANNER_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            raw_yaml = response.content[0].text.strip()
+            if raw_yaml.startswith("```"):
+                lines = raw_yaml.splitlines()
+                raw_yaml = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+            parsed = yaml.safe_load(raw_yaml) or {}
         tasks = parsed.get("tasks") or []
         if not isinstance(tasks, list):
             raise RuntimeError("Planner returned invalid structure: expected top-level tasks list.")
         return [dict(task) for task in tasks]
+
+    def _call_codex_bridge(
+        self,
+        *,
+        roadmap: str,
+        project_context: str,
+        constraints: str,
+        architecture_notes: str,
+    ) -> dict[str, Any]:
+        bridge_path = Path(
+            self.config.get("codex_bridge_path")
+            or (Path(__file__).resolve().parents[1] / "bridges" / "codex-manager" / "src" / "index.mjs")
+        )
+        payload = {
+            "roadmap": roadmap,
+            "project_context": project_context,
+            "constraints": constraints,
+            "architecture_notes": architecture_notes,
+            "cwd": str(self.project_root),
+            "model": self.model,
+            "reasoning_effort": self.config.get("codex_reasoning_effort", "medium"),
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            payload_path = Path(handle.name)
+        try:
+            result = subprocess.run(
+                ["node", str(bridge_path), "plan-tasks", str(payload_path)],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True,
+                timeout=int(self.config.get("manager_timeout_seconds", 180)),
+                check=False,
+            )
+        finally:
+            payload_path.unlink(missing_ok=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Codex planner bridge failed")
+        parsed = json.loads(result.stdout.strip() or "{}")
+        if not parsed.get("ok"):
+            raise RuntimeError("Codex planner bridge returned an invalid response.")
+        result_payload = parsed.get("result")
+        if not isinstance(result_payload, dict):
+            raise RuntimeError("Codex planner bridge returned a non-object payload.")
+        return result_payload
 
     def _validate_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
