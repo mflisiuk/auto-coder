@@ -20,7 +20,8 @@ python -m auto_coder.manager --tick-interval 15
 - **Izolacja** — praca w git worktree dla każdego zadania
 - **Recenzja** — automatyczna weryfikacja artefaktów przed commit
 - **Retry z feedbackiem** — pętle naprawcze aż do sukcesu lub blokady
-- [Architektura systemu](ARCHITECTURE.md)
+- **Sondy kwotów** — monitorowanie dostępności providerów AI
+- [Architektura systemu](docs/architecture.md)
 
 ## Dokumentacja
 - [Instalacja i konfiguracja](docs/setup.md)

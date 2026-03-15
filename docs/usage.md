@@ -1,141 +1,77 @@
-# Jak używać auto-coder
+# Jak używać
 
-## Przypadek 1: Codzienna praca z roadmapą
+## Podstawowe użycie
 
-### Krok 1: Przygotuj dokumentację
+### Uruchomienie managera
 ```bash
-# Edytuj ROADMAP.md z nowymi feature'ami
-nano ROADMAP.md
-
-# Upewnij się, że PROJECT.md jest aktualny
-cat PROJECT.md
+python -m auto_coder.manager --tick-interval 15
 ```
 
-### Krok 2: Uruchom managera
-```bash
-# W tle, co 15 minut
-python -m auto_coder.manager &
-
-# Lub przez cron (co 15 minut)
-crontab -e
-# */15 * * * * cd /path/to/auto-coder && python -m auto_coder.manager --once
-```
-
-### Krok 3: Monitoruj postępy
-```bash
-# Status bieżący
-python -m auto_coder.cli status
-
-# Szczegóły zadania
-python -m auto_coder.cli tasks show TASK-123
-
-# Logi na żywo
-tail -f logs/execution.log
-```
-
-### Krok 4: Review commitów
-```bash
-# Lista gotowych commitów
-git log --oneline origin/feature-branch..HEAD
-
-# Akceptacja
-python -m auto_coder.cli review accept TASK-123
-
-# Odrzucenie z feedbackiem
-python -m auto_coder.cli review reject TASK-123 --reason "Nie przechodzi testów"
-```
-
-## Przypadek 2: Walidacja briefu przed wykonaniem
-
-### Sprawdzenie czy brief jest wystarczający
-```bash
-python -m auto_coder.cli validate-brief ROADMAP.md PROJECT.md
-```
-
-**Przykładowa odpowiedź (sukces):**
-```
-✓ Brief poprawny
-- 3 zadania wykonalne
-- 0 ścieżek chronionych
-- Kwota wystarczająca: 45/100 tokenów
-```
-
-**Przykładowa odpowiedź (błąd):**
-```
-✗ Brief niejasny
-Brakuje:
-- Definicji kryteriów akceptacji dla modułu Płatności
-- Wymagań dotyczących obsługi błędów
-- Określenia kompatybilności wstecz
-```
-
-### Naprawa briefu
-```bash
-# Dodaj brakujące informacje do ROADMAP.md
-cat >> ROADMAP.md << 'EOF'
-
-## Kryteria akceptacji - Płatności
-- Obsługa kart Visa, Mastercard
-- Webhooki potwierdzające płatność
-- Retry przy błędach sieciowych (max 3 próby)
-EOF
-
-# Ponowna walidacja
-python -m auto_coder.cli validate-brief ROADMAP.md PROJECT.md
-```
-
-## Przypadek 3: Praca z zadaniami blokowymi
-
-### Sprawdzenie zablokowanych zadań
-```bash
-python -m auto_coder.cli tasks list --status blocked
-```
-
-### Analiza przyczyny blokady
-```bash
-python -m auto_coder.cli tasks show TASK-456 --verbose
-```
-
-**Typowe przyczyny:**
-- `quota_exhausted` — czekaj na reset kwoty
-- `protected_path` — zadanie wymaga manual review
-- `validation_failed` — brief niejasny, potrzebne uzupełnienia
-- `review_rejected` — worker odrzucił zadanie po review
-
-### Odblokowanie zadania
-```bash
-# Po zwiększeniu kwoty
-python -m auto_coder.cli tasks resume TASK-456
-
-# Po ręcznej akceptacji zmian chronionych
-python -m auto_coder.cli tasks approve-protected TASK-456
-
-# Po uzupełnieniu briefu
-python -m auto_coder.cli tasks retry TASK-456
-```
-
-## Tryby pracy
-
-### Tryb ciągły (domyślny)
-```bash
-python -m auto_coder.manager
-```
-Manager działa w pętli, wzbudzany co `TICK_INTERVAL_MINUTES`.
+Manager będzie cyklicznie:
+1. Czytał ROADMAP.md i PROJECT.md
+2. Generował zadania
+3. Wybierał wykonawców
+4. Uruchamiał pracę w izolowanym środowisku
+5. Recenzował wyniki
+6. Commitował gotową pracę
 
 ### Tryb jednorazowy
 ```bash
 python -m auto_coder.manager --once
 ```
-Jeden tick, potem exit. Przydatne do testów i cron.
 
-### Tryb debug
+### Walidacja briefów
 ```bash
-python -m auto_coder.manager --debug
+python -m auto_coder.validator --brief path/to/brief.md
 ```
-Verbose logging, przydatne przy rozwiązywaniu problemów.
 
-### Tryb suchy (dry-run)
-```bash
-python -m auto_coder.manager --dry-run
+System odrzuci niejasne wymagania i zwróci listę braków.
+
+## Przykłady użycia
+
+### Przykład 1: Nowy feature z roadmapy
+1. Dodaj wpis do ROADMAP.md:
+```markdown
+## Q1 2026
+- [ ] System powiadomień email
 ```
-Symulacja bez rzeczywistego wykonywania zadań.
+
+2. Uruchom managera:
+```bash
+python -m auto_coder.manager --once
+```
+
+3. Sprawdź status:
+```bash
+python -m auto_coder.cli status
+```
+
+### Przykład 2: Debugowanie konfiguracji
+```bash
+# Sprawdź status systemu
+python -m auto_coder.cli doctor
+
+# Wyświetl dostępne zadania
+python -m auto_coder.cli list
+
+# Sprawdź postępy
+python -m auto_coder.cli status
+```
+
+### Przykład 3: Praca z istniejącym projektem
+```bash
+# Skonfiguruj ścieżkę do projektu
+export PROJECT_ROOT=/path/to/existing/project
+
+# Uruchom z istniejącą dokumentacją
+python -m auto_coder.manager --tick-interval 30
+```
+
+## Komendy CLI
+
+| Komenda | Opis |
+|---------|------|
+| `doctor` | Diagnoza systemu i providerów |
+| `status` | Status bieżących zadań |
+| `list` | Lista zadań |
+| `validate` | Walidacja briefu |
