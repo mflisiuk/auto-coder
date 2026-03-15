@@ -1,85 +1,89 @@
-# Architektura auto-coder
+# Architektura auto-coder v1
 
-Szczegółowa architektura v1 jest opisana w [../ARCHITECTURE.md](../ARCHITECTURE.md).
+## Struktura plików
 
-Ten dokument to krótki operacyjny skrót.
+```
+auto-coder/
+├── auto_coder/
+│   ├── __init__.py
+│   ├── cli.py              # CLI entry point
+│   ├── manager.py          # Główny workflow engine
+│   ├── backends/
+│   │   ├── anthropic.py    # Anthropic backend
+│   │   └── codex.py        # Codex backend
+│   ├── workers/
+│   │   ├── cc.py           # Worker adapter
+│   │   ├── cch.py
+│   │   ├── ccg.py
+│   │   ├── codex.py
+│   │   ├── qwen.py
+│   │   └── gemini.py
+│   ├── planner/
+│   │   ├── __init__.py
+│   │   ├── synthesis.py    # Synteza planera
+│   │   └── routing.py      # Quota-aware routing
+│   ├── probes/
+│   │   └── quota.py        # Sondy dostępności kwotów
+│   └── storage/
+│       └── sqlite.py       # SQLite persistence
+├── docs/
+├── tests/
+├── setup.py
+└── requirements.txt
+```
 
-## Model działania
+## Jak działa kod
 
-`auto-coder` działa tickami:
+### 1. Manager (workflow engine)
 
-1. scheduler budzi się przez `auto-coder run`
-2. recovery czyści stare lease'y i przerwane runy
-3. planner odświeża backlog, jeśli zmienił się brief
-4. scheduler wybiera jeden gotowy task
-5. manager backend tworzy work order
-6. worker CLI wykonuje pracę w osobnym worktree
-7. reviewer odpala deterministic gates i review managera
-8. task przechodzi do `completed`, `waiting_for_retry`, `waiting_for_quota` albo `blocked`
+```python
+# auto_coder/manager.py
+class Manager:
+    def tick(self):
+        # 1. Wybierz gotowy task
+        # 2. Stwórz work order
+        # 3. Uruchom workera
+        # 4. Wymagaj AGENT_REPORT.json
+        # 5. Odpal testy i policy checks
+        # 6. Reviewuj wynik
+        # 7. Retry lub zakończ
+```
 
-## Najważniejsze moduły
+### 2. Backends
 
-- `config.py`
-  Ładowanie `.auto-coder/config.yaml` i backend-specific defaults.
+Backendy generują backlog z briefu:
 
-- `brief_validator.py`
-  Odrzuca niejasny brief zanim planner zacznie generować backlog.
+- `anthropic` - używa API Anthropic
+- `codex` - używa Node bridge do `codex exec`
 
-- `planner.py`
-  Generuje `tasks.generated.yaml`, scala `tasks.local.yaml`, waliduje DAG i syncuje taski do SQLite.
+### 3. Workers
 
-- `storage.py`
-  Source of truth w SQLite: taski, work orders, attempts, run ticks, leases, manager threads.
+Workery wykonują zadania jako CLI w osobnym git worktree.
 
-- `scheduler.py`
-  Wybór taska do uruchomienia z uwzględnieniem zależności, retry i cooldownów.
+### 4. Planner
 
-- `orchestrator.py`
-  Jeden tick end-to-end.
+Syntezuje plan zadań i routuje do dostępnych providerów.
 
-- `reviewer.py`
-  Deterministic review + handoff do manager backendu.
+### 5. Quota Probes
 
-- `managers/`
-  Obsługiwane backendy managera:
-  - `anthropic`
-  - `codex` przez bridge Node -> `codex exec`
+Sondy sprawdzają dostępność kwotów przed routowaniem.
 
-- `workers/`
-  Adaptery CLI dla agentów kodujących.
+## Jak rozbudować
 
-- `quota/` i `router.py`
-  Probe'y usage, fallback providerów i `waiting_for_quota`.
+### Dodanie nowego backendu
 
-## Source of truth
+1. Stwórz `auto_coder/backends/twoj_backend.py`
+2. Zaimplementuj interfejs `Backend`
+3. Zarejestruj w `manager.py`
 
-Metadane runtime idą do SQLite:
+### Dodanie nowego workera
 
-- task runtime
-- attempts
-- run ticks
-- leases
-- manager thread state
-- work orders
+1. Stwórz `auto_coder/workers/twoj_worker.py`
+2. Zaimplementuj interfejs `Worker`
+3. Dodaj adapter CLI
 
-Duże artefakty trafiają do `.auto-coder/reports/`.
+### Dodanie nowej sondy
 
-## Stany taska
-
-- `queued`
-- `ready`
-- `leased`
-- `running`
-- `waiting_for_retry`
-- `waiting_for_quota`
-- `blocked`
-- `completed`
-
-## Zasady bezpieczeństwa
-
-- worktree per attempt
-- allowed/protected path policy
-- obowiązkowe `completion_commands`
-- obowiązkowy `AGENT_REPORT.json`
-- `quota_exhausted` nie jest zwykłym failure
-- auto-merge jest wyłączony domyślnie
+1. Stwórz `auto_coder/probes/twoj_probe.py`
+2. Zaimplementuj `probe()` zwracające dostępność
+3. Podłącz do routingu

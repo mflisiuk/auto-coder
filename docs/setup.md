@@ -2,155 +2,83 @@
 
 ## Wymagania
 
-- Python `>=3.11`
-- Git `>=2.23`
-- jeden manager backend:
-  - Anthropic SDK z `ANTHROPIC_API_KEY`, albo
-  - `codex` CLI + `node`
-- co najmniej jeden worker CLI, którego chcesz używać, np. `cc`, `cch`, `ccg`, `codex`
+- Python 3.10+
+- Git
+- Node.js (tylko dla backendu codex)
+- Dostęp do API (Anthropic lub Codex)
 
-## Instalacja pakietu
+## Instalacja
 
 ```bash
-git clone <repo-z-auto-coderem>
+git clone <twoje-repo-z-auto-coderem>
 cd auto-coder
 pip install -e .
 ```
 
-## Inicjalizacja repo projektu
+## Inicjalizacja projektu
 
-W repo, które ma być rozwijane przez auto-coder:
+W repozytorium, które ma być rozwijane:
 
 ```bash
 auto-coder init
 ```
 
-To tworzy `.auto-coder/config.yaml` i `.auto-coder/state.db`.
+Tworzy to strukturę:
 
-Repo powinno mieć już co najmniej jeden commit. Worktree execution nie ruszy na pustym repo bez `HEAD`.
+```text
+.auto-coder/
+  config.yaml      # Konfiguracja
+  state.db         # SQLite z taskami
+  .gitignore       # Ignorowane pliki
+```
 
-## Minimalny wsad wejściowy
-
-W katalogu repo muszą istnieć:
-
-- `ROADMAP.md`
-- `PROJECT.md`
-
-Opcjonalnie:
-
-- `CONSTRAINTS.md`
-- `ARCHITECTURE_NOTES.md`
-
-Dokładny kontrakt wejścia:
-
-- `INPUT_SPEC.md`
-- `docs/inputs.md`
-- `example-project/`
-
-## Konfiguracja managera
+## Konfiguracja backendu
 
 ### Anthropic
 
 ```bash
-export ANTHROPIC_API_KEY=...
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-`config.yaml`:
+W `.auto-coder/config.yaml`:
 
 ```yaml
 manager_backend: anthropic
-manager_model: ""
-default_worker: cc
-fallback_worker: cch
+manager_model: claude-sonnet-4-20250514
+default_worker: anthropic
 ```
 
 ### Codex
 
 Wymagania:
+- Zainstalowany `codex` CLI
+- Zainstalowany `node`
+- Aktywna autoryzacja CLI
 
-- zainstalowany `codex`
-- zainstalowany `node`
-- działające logowanie w Codex CLI
-
-`config.yaml`:
+W `.auto-coder/config.yaml`:
 
 ```yaml
 manager_backend: codex
-manager_model: ""
-codex_reasoning_effort: medium
+manager_model: ""   # pusty = backend-specific default
 default_worker: codex
-fallback_worker: cch
 ```
 
-Pusty `manager_model` oznacza backend-specific default:
+## Wymagania briefu
 
-- `anthropic` -> `claude-opus-4-6`
-- `codex` -> `gpt-5`
+W katalogu repo muszą istnieć:
 
-## Typowa konfiguracja Git automation
+- `ROADMAP.md` - roadmapa projektu
+- `PROJECT.md` - opis projektu
 
-Bezpieczny start:
+Szczególe w [INPUT_SPEC.md](../INPUT_SPEC.md).
 
-```yaml
-dry_run: true
-auto_commit: false
-auto_push: false
-auto_merge: false
-```
-
-Później możesz przełączyć na:
-
-```yaml
-dry_run: false
-auto_commit: true
-auto_push: true
-auto_merge: false
-```
-
-## Weryfikacja środowiska
+## Weryfikacja
 
 ```bash
 auto-coder doctor
 ```
 
-Doctor sprawdza:
-
-- dostępność `git`
-- obecność `state.db`
-- dostępność manager backendu
-- dostępność znanych workerów
-- brief validation dla `ROADMAP.md` i `PROJECT.md`
-- quota probes, jeśli są skonfigurowane
-
-## Pierwsze uruchomienie
-
-```bash
-auto-coder plan
-auto-coder status
-auto-coder run --dry-run
-```
-
-Jeśli preview wygląda dobrze:
-
-```bash
-auto-coder run --live
-```
-
-## Najczęstsze problemy
-
-### `FAIL: manager backend unavailable`
-
-- dla Anthropic ustaw `ANTHROPIC_API_KEY`
-- dla Codexa zainstaluj `codex` i `node`
-- sprawdź `manager_backend` w `.auto-coder/config.yaml`
-
-### `FAIL: brief niejasny`
-
-- uzupełnij brakujące sekcje wskazane przez walidator
-- dodaj konkretne komendy testowe i policy ścieżek do `PROJECT.md`
-
-### `quota_exhausted`
-
-- poczekaj do `retry_after`
-- zmień fallback worker w `providers`
-- skróć work ordery albo obniż częstotliwość ticków
+Komenda wyświetli:
+- Status providerów
+- Dostępne kwoty (quota)
+- Wykryte problemy

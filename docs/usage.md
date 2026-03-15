@@ -1,132 +1,62 @@
 # Jak używać auto-coder
 
-## Standardowy flow
+Ten dokument opisuje typowe przypadki użycia dla użytkowników końcowych.
 
-### 1. Przygotuj brief
-
-W repo projektu utrzymuj aktualne:
-
-- `ROADMAP.md`
-- `PROJECT.md`
-- opcjonalnie `CONSTRAINTS.md`
-- opcjonalnie `ARCHITECTURE_NOTES.md`
-
-### 2. Wygeneruj backlog
+## Przypadek 1: Pierwsze uruchomienie z nowym projektem
 
 ```bash
+# 1. Zainicjalizuj auto-coder w repozytorium
+auto-coder init
+
+# 2. Sprawdź środowisko i dostępność providerów
 auto-coder doctor
+
+# 3. Wygeneruj plan zadań z briefu
 auto-coder plan
-```
 
-`plan`:
-
-- waliduje brief
-- odpala manager backend
-- zapisuje `.auto-coder/tasks.generated.yaml`
-- scala lokalne override'y z `.auto-coder/tasks.local.yaml`
-- zapisuje wynik do `.auto-coder/tasks.yaml`
-- synchronizuje taski do SQLite
-
-### 3. Podejrzyj status
-
-```bash
+# 4. Sprawdź status
 auto-coder status
-```
 
-Status pokazuje:
-
-- task runtime w SQLite
-- licznik prób
-- provider usage
-- quota state i `retry_after`
-
-### 4. Wykonaj jeden tick
-
-```bash
-auto-coder run --dry-run
+# 5. Uruchom jeden tick pracy
 auto-coder run --live
 ```
 
-`run` robi jeden pełny tick:
-
-- recovery po przerwanych runach
-- wybór taska przez scheduler
-- utworzenie worktree
-- uruchomienie workera
-- policy checks
-- testy
-- review i zapis attemptu
-- opcjonalny commit/push
-
-## Praca codzienna
-
-### Gdy zmieniasz brief
-
-Po zmianie `ROADMAP.md` albo `PROJECT.md`:
+## Przypadek 2: Praca ciągła z cronem
 
 ```bash
-auto-coder plan
-auto-coder status
+# Dodaj do crontab (uruchomienie co 15 minut)
+*/15 * * * * cd /path/to/project && auto-coder run --live >> /var/log/auto-coder.log 2>&1
 ```
 
-`auto-coder run` i tak spróbuje zrobić `refresh_if_changed()`, ale jawne `plan` jest lepsze do kontroli.
+## Przypadek 3: Praca z różnymi backendami
 
-### Gdy chcesz odpalić tylko jeden task
-
+### Anthropic backend
 ```bash
-auto-coder run --task task-id --dry-run
-auto-coder run --task task-id --live
+export ANTHROPIC_API_KEY=sk-ant-...
+auto-coder run --live
 ```
 
-### Gdy migrujesz stary backlog
-
+### Codex backend
 ```bash
-auto-coder migrate ./legacy-tasks.yaml
-auto-coder plan
+# Wymaga zainstalowanego codex i node
+auto-coder run --backend codex --live
 ```
 
-To importuje taski do `.auto-coder/tasks.local.yaml`.
+## Tryby pracy
 
-## Jak czytać wyniki
+| Tryb | Opis |
+|------|------|
+| `--dry-run` | Symulacja bez faktycznej pracy |
+| `--live` | Pełne wykonanie ticka |
+| `--verbose` | Szczegółowe logi |
 
-### `completed`
+## Komendy
 
-Task przeszedł:
-
-- allowed/protected path policy
-- completion commands
-- deterministic review
-- manager review
-
-### `waiting_for_retry`
-
-Task jest naprawialny i wróci w kolejnym ticku z feedbackiem.
-
-### `waiting_for_quota`
-
-Provider wszedł w limit albo zwrócił `429`. Task nie jest traktowany jako zwykła porażka.
-
-### `blocked`
-
-Task nie robi postępu albo wymaga zmiany briefu, testów albo polityki projektu.
-
-## Artefakty runtime
-
-W `.auto-coder/` znajdziesz:
-
-- `state.db` — source of truth
-- `tasks.generated.yaml` — backlog z managera
-- `tasks.local.yaml` — lokalne override'y
-- `tasks.yaml` — efektywny backlog
-- `reports/` — logi runów, testów, diffów i raportów workerów
-- `worktrees/` — tymczasowe repo dla prób
-
-## Tryb unattended
-
-`auto-coder` nie ma własnego demona. Odpalasz go tickami:
-
-- przez `cron`
-- przez `systemd` timer
-- przez zewnętrzny scheduler CI / VM
-
-Przykłady są w `docs/cron.md`.
+| Komenda | Opis |
+|---------|------|
+| `auto-coder init` | Inicjalizacja projektu |
+| `auto-coder doctor` | Sprawdzenie środowiska |
+| `auto-coder plan` | Generowanie planu z briefu |
+| `auto-coder status` | Status tasków i providerów |
+| `auto-coder run` | Uruchomienie jednego ticka |
+| `auto-coder migrate` | Migracja bazy danych |
