@@ -18,6 +18,8 @@ from auto_coder.config import (
     find_project_root,
     load_config,
 )
+from auto_coder.storage import ensure_database, list_tables
+from auto_coder.brief_validator import validate_project_brief
 
 
 # ═══════════════════════════════════════════════════════════════════════ commands
@@ -35,11 +37,13 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     acd.mkdir(parents=True, exist_ok=True)
     config_path.write_text(CONFIG_YAML_TEMPLATE, encoding="utf-8")
+    ensure_database(acd / "state.db")
 
     gitignore = acd / ".gitignore"
     gitignore.write_text(
         "# auto-coder runtime files — do not commit\n"
         "state.json\n"
+        "state.db\n"
         "usage.json\n"
         "worktrees/\n"
         "reports/\n"
@@ -84,6 +88,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     checks["git remote reachable"] = subprocess.run(
         ["git", "remote", "-v"], cwd=str(project_root), capture_output=True
     ).returncode == 0
+    checks["state.db present"] = config["state_db_path"].exists()
 
     workers = ["cc", "cch", "ccg", "codex"]
     for w in workers:
@@ -92,6 +97,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for name, ok in checks.items():
         status = "OK  " if ok else "FAIL"
         print(f"  {status}  {name}")
+
+    roadmap_exists = (project_root / "ROADMAP.md").exists()
+    project_exists = (project_root / "PROJECT.md").exists()
+    if roadmap_exists or project_exists:
+        validation = validate_project_brief(project_root)
+        print()
+        print("Brief validation:")
+        if validation.ok:
+            print("  OK    input brief is sufficient for planning")
+        else:
+            print(f"  FAIL  {validation.summary()}")
+            for item in validation.next_actions:
+                print(f"    - {item}")
 
     print()
     if all(checks.values()):
@@ -124,6 +142,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print("Create it first — see example/ROADMAP.md")
         return 1
 
+    validation = validate_project_brief(project_root)
+    if not validation.ok:
+        print(f"FAIL: {validation.summary()}")
+        for item in validation.next_actions:
+            print(f"  - {item}")
+        return 1
+
     print(f"Reading {roadmap_path} ...")
     planner = Planner(config)
     try:
@@ -153,6 +178,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # tasks
     tasks_path = config["tasks_path"]
     state_path = config["state_path"]
+    state_db_path = config["state_db_path"]
 
     tasks: list[dict] = []
     if tasks_path.exists():
@@ -191,6 +217,11 @@ def cmd_status(args: argparse.Namespace) -> int:
             ratio_str = f" ({data['ratio']*100:.0f}%)" if limit else ""
             print(f"  {provider:<8} {data['tokens_today']:>8,} tokens{limit_str}{ratio_str}"
                   f"  ({data['calls_today']} calls)")
+
+    if state_db_path.exists():
+        print()
+        print(f"SQLite storage: {state_db_path}")
+        print(f"Tables: {', '.join(list_tables(state_db_path))}")
     return 0
 
 
@@ -218,7 +249,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     from auto_coder.planner import Planner
     if Planner.is_available():
         planner = Planner(config)
-        refreshed = planner.refresh_if_changed()
+        try:
+            refreshed = planner.refresh_if_changed()
+        except Exception as exc:
+            print(f"FAIL: could not refresh tasks from ROADMAP.md: {exc}")
+            return 1
         if refreshed:
             print("ROADMAP.md changed — tasks regenerated.")
 

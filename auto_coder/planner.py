@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from auto_coder.brief_validator import validate_project_brief
 
 TASKS_SCHEMA_DESCRIPTION = """
 Each task must have:
@@ -89,6 +89,8 @@ class Planner:
         project_context = _read(self.project_root / "PROJECT.md")
         if not roadmap:
             raise RuntimeError("ROADMAP.md not found or empty.")
+        validation = validate_project_brief(self.project_root)
+        validation.raise_if_invalid()
 
         tasks = self._call_api(roadmap, project_context)
         self._save(tasks)

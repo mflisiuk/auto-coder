@@ -1,8 +1,6 @@
 """Project root discovery and configuration loading."""
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +9,7 @@ import yaml
 AUTO_CODER_DIR = ".auto-coder"
 CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
+STATE_DB_FILE = "state.db"
 TASKS_FILE = "tasks.yaml"
 USAGE_FILE = "usage.json"
 REPORTS_DIR = "reports"
@@ -71,6 +70,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "_auto_coder_dir": str(acd),
         "_tasks_path": str(acd / TASKS_FILE),
         "_state_path": str(acd / STATE_FILE),
+        "_state_db_path": str(acd / STATE_DB_FILE),
         "_usage_path": str(acd / USAGE_FILE),
         "_reports_root": str(acd / REPORTS_DIR),
         "_worktree_root": str(acd / "worktrees"),
@@ -101,6 +101,7 @@ def load_config(project_root: Path | None = None) -> dict[str, Any]:
     cfg["auto_coder_dir"] = Path(cfg["_auto_coder_dir"])
     cfg["tasks_path"] = Path(cfg["_tasks_path"])
     cfg["state_path"] = Path(cfg["_state_path"])
+    cfg["state_db_path"] = Path(cfg["_state_db_path"])
     cfg["usage_path"] = Path(cfg["_usage_path"])
     cfg["reports_root"] = Path(cfg["_reports_root"])
     cfg["worktree_root"] = Path(cfg["_worktree_root"])

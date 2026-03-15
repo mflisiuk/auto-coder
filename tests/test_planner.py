@@ -40,12 +40,58 @@ tasks:
       Implement basic auth.
 """
 
+VALID_ROADMAP = """\
+## Project Goal
+Build auth module.
+
+## Target User
+- Internal user
+
+## Ordered Milestones
+### Milestone 1
+Implement auth.
+
+## In Scope
+- login
+
+## Out of Scope
+- oauth
+
+## Acceptance Criteria
+- login route works
+"""
+
+VALID_PROJECT = """\
+## Tech Stack
+- Python 3.12
+
+## Repo Structure
+src/
+tests/
+
+## Commands
+```bash
+python3 -m pytest tests/
+```
+
+## Editable Paths
+- src/
+- tests/
+
+## Protected Paths
+- .github/
+
+## Environment Assumptions
+- local only
+"""
+
 
 class TestPlanner(unittest.TestCase):
     def test_generate_creates_tasks_yaml(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "ROADMAP.md").write_text("# Build auth module", encoding="utf-8")
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
             config = _make_config(root)
             client = _mock_anthropic(SAMPLE_TASKS_YAML)
             with patch("anthropic.Anthropic", return_value=client):
@@ -66,7 +112,8 @@ class TestPlanner(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             roadmap = root / "ROADMAP.md"
-            roadmap.write_text("# v1", encoding="utf-8")
+            roadmap.write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
             config = _make_config(root)
             client = _mock_anthropic(SAMPLE_TASKS_YAML)
             with patch("anthropic.Anthropic", return_value=client):
@@ -78,7 +125,8 @@ class TestPlanner(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             roadmap = root / "ROADMAP.md"
-            roadmap.write_text("# v1", encoding="utf-8")
+            roadmap.write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
             config = _make_config(root)
             client = _mock_anthropic(SAMPLE_TASKS_YAML)
             with patch("anthropic.Anthropic", return_value=client):
@@ -90,7 +138,8 @@ class TestPlanner(unittest.TestCase):
     def test_strips_markdown_fences(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "ROADMAP.md").write_text("# Test", encoding="utf-8")
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
             config = _make_config(root)
             fenced = f"```yaml\n{SAMPLE_TASKS_YAML}\n```"
             client = _mock_anthropic(fenced)
@@ -98,6 +147,15 @@ class TestPlanner(unittest.TestCase):
                 planner = Planner(config)
                 tasks = planner.generate()
             self.assertEqual(tasks[0]["id"], "sprint1-auth")
+
+    def test_generate_rejects_unclear_brief(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text("# Build auth module", encoding="utf-8")
+            config = _make_config(root)
+            planner = Planner(config)
+            with self.assertRaises(RuntimeError):
+                planner.generate()
 
 
 if __name__ == "__main__":

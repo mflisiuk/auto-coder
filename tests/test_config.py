@@ -58,6 +58,7 @@ class TestLoadConfig(unittest.TestCase):
             (root / AUTO_CODER_DIR).mkdir()
             config = load_config(root)
             self.assertIsInstance(config["state_path"], Path)
+            self.assertIsInstance(config["state_db_path"], Path)
             self.assertIsInstance(config["reports_root"], Path)
             self.assertIsInstance(config["worktree_root"], Path)
 
