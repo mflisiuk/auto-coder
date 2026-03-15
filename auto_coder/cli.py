@@ -18,7 +18,7 @@ from auto_coder.config import (
     find_project_root,
     load_config,
 )
-from auto_coder.storage import ensure_database, list_tables
+from auto_coder.storage import ensure_database, list_tables, list_task_runtime, sync_tasks
 from auto_coder.brief_validator import validate_project_brief
 
 
@@ -77,7 +77,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"base_branch  : {config['base_branch']}")
     print(f"dry_run      : {config['dry_run']}")
     print(f"manager      : {'enabled' if config.get('manager_enabled') else 'disabled'} "
-          f"(model={config.get('manager_model')})")
+          f"(backend={config.get('manager_backend')}, model={config.get('manager_model')})")
     print(f"default worker: {config.get('default_worker')}")
     print()
 
@@ -195,14 +195,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     task_state = state.get("tasks", {})
     print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'UPDATED'}")
     print("-" * 85)
-    for task in sorted(tasks, key=lambda t: int(t.get("priority", 100))):
-        tid = task.get("id", "?")
-        ts = task_state.get(tid, {})
-        status = ts.get("status", "queued")
-        attempts = ts.get("attempt_count", 0)
-        updated = (ts.get("updated_at") or "")[:16]
-        enabled = "" if task.get("enabled", True) else " [disabled]"
-        print(f"{tid + enabled:<35} {status:<18} {str(attempts):<10} {updated}")
+    db_rows = list_task_runtime(state_db_path) if state_db_path.exists() else []
+    if db_rows:
+        for row in db_rows:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            attempts = payload.get("attempt_count", 0)
+            updated = (row["updated_at"] or "")[:16]
+            enabled = "" if payload.get("enabled", True) else " [disabled]"
+            print(f"{str(row['id']) + enabled:<35} {str(row['status']):<18} {str(attempts):<10} {updated}")
+    else:
+        for task in sorted(tasks, key=lambda t: int(t.get("priority", 100))):
+            tid = task.get("id", "?")
+            ts = task_state.get(tid, {})
+            status = ts.get("status", "queued")
+            attempts = ts.get("attempt_count", 0)
+            updated = (ts.get("updated_at") or "")[:16]
+            enabled = "" if task.get("enabled", True) else " [disabled]"
+            print(f"{tid + enabled:<35} {status:<18} {str(attempts):<10} {updated}")
 
     # usage
     from auto_coder.router import ProviderRouter
@@ -268,6 +277,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not tasks:
         print("tasks.yaml has no tasks.")
         return 0
+    sync_tasks(config["state_db_path"], tasks)
 
     state_path = config["state_path"]
     state: dict[str, Any] = {}

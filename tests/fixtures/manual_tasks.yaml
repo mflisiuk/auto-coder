@@ -1,0 +1,14 @@
+tasks:
+  - id: sprint1-example
+    title: Example manual task
+    priority: 10
+    enabled: true
+    allowed_paths:
+      - auto_coder/
+      - tests/
+    baseline_commands:
+      - python3 -m unittest tests.test_storage
+    completion_commands:
+      - python3 -m unittest tests.test_storage
+    prompt: |
+      Create a small, testable change inside the allowed paths.

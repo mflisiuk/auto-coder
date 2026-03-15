@@ -44,6 +44,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "fetch_before_run": True,
         "max_tasks_per_run": 1,
         "max_attempts_per_task_per_run": 3,
+        "failure_block_threshold": 3,
         "agent_timeout_minutes": 45,
         "test_timeout_minutes": 20,
         "stale_running_timeout_minutes": 120,
@@ -55,6 +56,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "auto_merge": False,
         "review_required": True,
         "manager_enabled": True,
+        "manager_backend": "anthropic",
         "manager_model": "claude-opus-4-6",
         "default_worker": "cc",
         "fallback_worker": "cch",
@@ -125,6 +127,7 @@ fetch_before_run: true
 # Execution limits
 max_tasks_per_run: 1
 max_attempts_per_task_per_run: 3
+failure_block_threshold: 3
 agent_timeout_minutes: 45
 test_timeout_minutes: 20
 
@@ -136,6 +139,7 @@ auto_merge: false
 # Review / manager
 review_required: true
 manager_enabled: true
+manager_backend: anthropic
 manager_model: claude-opus-4-6
 
 # Default worker CLI and fallback

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from auto_coder.models import AttemptStatus, TaskSpec, TaskStatus, WorkOrderStatus
+from auto_coder.models import AttemptStatus, TaskSpec, TaskStatus, WorkOrderSpec, WorkOrderStatus
 
 
 class TestEnums(unittest.TestCase):
@@ -33,6 +33,23 @@ class TestTaskSpec(unittest.TestCase):
         payload = spec.to_mapping()
         self.assertEqual(payload["id"], "task-1")
         self.assertEqual(payload["preferred_workers"], ["cch"])
+
+
+class TestWorkOrderSpec(unittest.TestCase):
+    def test_round_trip(self):
+        spec = WorkOrderSpec(
+            id="task-1-wo-01",
+            task_id="task-1",
+            sequence_no=1,
+            goal="Do the thing",
+            manager_feedback="Fix edge case",
+            selected_worker="cch",
+        )
+        payload = spec.to_mapping()
+        restored = WorkOrderSpec.from_mapping(payload)
+        self.assertEqual(restored.id, "task-1-wo-01")
+        self.assertEqual(restored.selected_worker, "cch")
+        self.assertEqual(restored.manager_feedback, "Fix edge case")
 
 
 if __name__ == "__main__":

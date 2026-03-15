@@ -154,7 +154,7 @@ class TestRunBatch(unittest.TestCase):
 
             self.assertEqual(len(calls), 2)
 
-    def test_retries_on_retryable_status(self):
+    def test_does_not_retry_same_task_within_single_tick(self):
         with TemporaryDirectory() as tmp:
             config = self._make_config(tmp)
             config["max_tasks_per_run"] = 1
@@ -167,7 +167,7 @@ class TestRunBatch(unittest.TestCase):
                 attempt["n"] += 1
                 ts = shared_state.setdefault("tasks", {}).setdefault(task["id"], {})
                 if attempt["n"] == 1:
-                    ts["status"] = "tests_failed"
+                    ts["status"] = "waiting_for_retry"
                     return 1
                 ts["status"] = "completed"
                 return 0
@@ -175,8 +175,8 @@ class TestRunBatch(unittest.TestCase):
             with patch("auto_coder.orchestrator.run_one_task", side_effect=fake_run):
                 exit_code = run_batch(config, tasks, state)
 
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(attempt["n"], 2)
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(attempt["n"], 1)
 
 
 if __name__ == "__main__":

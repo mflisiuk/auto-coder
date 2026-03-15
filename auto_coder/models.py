@@ -43,6 +43,57 @@ class AttemptStatus(StrEnum):
 
 
 @dataclass(slots=True)
+class WorkOrderSpec:
+    id: str
+    task_id: str
+    sequence_no: int = 1
+    goal: str = ""
+    scope_summary: str = ""
+    allowed_paths: list[str] = field(default_factory=list)
+    completion_commands: list[str] = field(default_factory=list)
+    selected_worker: str = ""
+    manager_feedback: str = ""
+    status: str = WorkOrderStatus.QUEUED.value
+    retry_after: str | None = None
+    created_by: str = "system"
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any]) -> "WorkOrderSpec":
+        return cls(
+            id=str(payload["id"]),
+            task_id=str(payload["task_id"]),
+            sequence_no=int(payload.get("sequence_no", 1)),
+            goal=str(payload.get("goal", "")),
+            scope_summary=str(payload.get("scope_summary", "")),
+            allowed_paths=list(payload.get("allowed_paths", [])),
+            completion_commands=list(payload.get("completion_commands", [])),
+            selected_worker=str(payload.get("selected_worker", "")),
+            manager_feedback=str(payload.get("manager_feedback", "")),
+            status=str(payload.get("status", WorkOrderStatus.QUEUED.value)),
+            retry_after=str(payload["retry_after"]) if payload.get("retry_after") else None,
+            created_by=str(payload.get("created_by", "system")),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        payload = {
+            "id": self.id,
+            "task_id": self.task_id,
+            "sequence_no": self.sequence_no,
+            "goal": self.goal,
+            "scope_summary": self.scope_summary,
+            "allowed_paths": self.allowed_paths,
+            "completion_commands": self.completion_commands,
+            "selected_worker": self.selected_worker,
+            "manager_feedback": self.manager_feedback,
+            "status": self.status,
+            "created_by": self.created_by,
+        }
+        if self.retry_after:
+            payload["retry_after"] = self.retry_after
+        return payload
+
+
+@dataclass(slots=True)
 class TaskSpec:
     id: str
     title: str

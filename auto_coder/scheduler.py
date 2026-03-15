@@ -7,11 +7,14 @@ from typing import Any
 
 RETRYABLE_STATUSES = {
     "agent_failed",
+    "agent_report_missing",
     "no_changes",
     "policy_failed",
     "tests_failed",
     "review_failed",
     "quota_exhausted",
+    "waiting_for_retry",
+    "waiting_for_quota",
 }
 
 
@@ -21,6 +24,14 @@ def now_iso() -> str:
 
 def should_retry(status: str | None) -> bool:
     return (status or "") in RETRYABLE_STATUSES
+
+
+def dependencies_satisfied(task: dict[str, Any], state: dict[str, Any]) -> bool:
+    task_state = state.get("tasks", {})
+    for dependency in task.get("depends_on", []):
+        if task_state.get(dependency, {}).get("status") != "completed":
+            return False
+    return True
 
 
 def select_task(tasks: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, Any] | None:
@@ -35,12 +46,14 @@ def select_task(tasks: list[dict[str, Any]], state: dict[str, Any]) -> dict[str,
         if not task_id:
             continue
         task_status = task_state.get(task_id, {})
-        if task_status.get("status") == "completed":
+        if task_status.get("status") in {"completed", "blocked", "running", "leased"}:
+            continue
+        if not dependencies_satisfied(task, state):
             continue
         max_total = task.get("max_total_attempts")
         if max_total and int(task_status.get("attempt_count", 0)) >= int(max_total):
             continue
-        if task_status.get("status") == "quota_exhausted":
+        if task_status.get("status") in {"waiting_for_retry", "waiting_for_quota", "quota_exhausted"}:
             retry_after = task_status.get("retry_after")
             if retry_after and now_iso() < retry_after:
                 continue

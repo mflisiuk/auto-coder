@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from auto_coder.prompts.manager_review import SYSTEM_PROMPT
+from auto_coder.storage import load_manager_messages, save_manager_messages
+
 
 @dataclass
 class AttemptResult:
@@ -32,13 +35,7 @@ class ManagerDecision:
 
 
 class ManagerBrain:
-    SYSTEM_PROMPT = (
-        "You are an engineering manager overseeing an autonomous coding agent. "
-        "Evaluate each attempt and provide specific, actionable feedback. "
-        "Be concrete: name the exact file, function, and change needed. "
-        "Respond in JSON only:\n"
-        '{"verdict": "approve"|"retry"|"abandon", "feedback": str, "blockers": [str]}'
-    )
+    SYSTEM_PROMPT = SYSTEM_PROMPT
 
     def __init__(
         self,
@@ -52,6 +49,7 @@ class ManagerBrain:
         self.task = task
         self.config = config
         self.state_path = state_path
+        self.state_db_path: Path | None = config.get("state_db_path")
         self.model = model
         self.messages: list[dict] = self._load_messages()
         self._last_decision: ManagerDecision | None = None
@@ -112,6 +110,14 @@ class ManagerBrain:
     # ----------------------------------------------------------------- private
 
     def _load_messages(self) -> list[dict]:
+        if self.state_db_path and self.state_db_path.exists():
+            messages = load_manager_messages(
+                self.state_db_path,
+                task_id=self.task_id,
+                manager_backend="anthropic",
+            )
+            if messages:
+                return messages
         if not self.state_path.exists():
             return []
         try:
@@ -121,6 +127,13 @@ class ManagerBrain:
             return []
 
     def _save_messages(self) -> None:
+        if self.state_db_path:
+            save_manager_messages(
+                self.state_db_path,
+                task_id=self.task_id,
+                manager_backend="anthropic",
+                messages=self.messages,
+            )
         state: dict[str, Any] = {}
         if self.state_path.exists():
             try:

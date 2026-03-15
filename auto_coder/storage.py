@@ -1,6 +1,8 @@
 """SQLite storage bootstrap and small helpers for auto-coder."""
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -142,3 +144,308 @@ def list_tables(db_path: Path) -> list[str]:
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
     return [str(row["name"]) for row in rows]
+
+
+def sync_tasks(db_path: Path, tasks: list[dict]) -> None:
+    """Upsert tasks from the current backlog into SQLite."""
+    ensure_database(db_path)
+    with connect(db_path) as conn:
+        for task in tasks:
+            task_id = str(task["id"])
+            title = str(task.get("title", task_id))
+            priority = int(task.get("priority", 100))
+            payload_json = json.dumps(task, ensure_ascii=False)
+            conn.execute(
+                """
+                INSERT INTO tasks (id, title, priority, payload_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    priority = excluded.priority,
+                    payload_json = excluded.payload_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (task_id, title, priority, payload_json),
+            )
+        conn.commit()
+
+
+def set_task_runtime(
+    db_path: Path,
+    *,
+    task_id: str,
+    title: str,
+    priority: int,
+    status: str,
+    payload: dict,
+) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO tasks (id, title, status, priority, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                status = excluded.status,
+                priority = excluded.priority,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (task_id, title, status, priority, payload_json),
+        )
+        conn.commit()
+
+
+def list_task_runtime(db_path: Path) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, title, status, priority, payload_json, updated_at FROM tasks ORDER BY priority, id"
+        ).fetchall()
+    return rows
+
+
+def get_task_runtime(db_path: Path, task_id: str) -> sqlite3.Row | None:
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, title, status, priority, payload_json, updated_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+    return row
+
+
+def upsert_work_order(
+    db_path: Path,
+    *,
+    work_order_id: str,
+    task_id: str,
+    status: str,
+    sequence_no: int,
+    payload: dict,
+) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO work_orders (id, task_id, status, sequence_no, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                task_id = excluded.task_id,
+                status = excluded.status,
+                sequence_no = excluded.sequence_no,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (work_order_id, task_id, status, sequence_no, payload_json),
+        )
+        conn.commit()
+
+
+def get_work_order(db_path: Path, work_order_id: str) -> sqlite3.Row | None:
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, task_id, status, sequence_no, payload_json, created_at, updated_at
+            FROM work_orders
+            WHERE id = ?
+            """,
+            (work_order_id,),
+        ).fetchone()
+    return row
+
+
+def list_work_orders_for_task(db_path: Path, task_id: str) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, task_id, status, sequence_no, payload_json, created_at, updated_at
+            FROM work_orders
+            WHERE task_id = ?
+            ORDER BY sequence_no, id
+            """,
+            (task_id,),
+        ).fetchall()
+    return rows
+
+
+def latest_work_order_for_task(db_path: Path, task_id: str) -> sqlite3.Row | None:
+    rows = list_work_orders_for_task(db_path, task_id)
+    return rows[-1] if rows else None
+
+
+def create_run_tick(db_path: Path, run_tick_id: str, *, status: str = "started", payload: dict | None = None) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO run_ticks (id, status, payload_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (run_tick_id, status, payload_json),
+        )
+        conn.commit()
+
+
+def update_run_tick(db_path: Path, run_tick_id: str, *, status: str, payload: dict | None = None) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE run_ticks
+            SET status = ?, payload_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, payload_json, run_tick_id),
+        )
+        conn.commit()
+
+
+def record_attempt(
+    db_path: Path,
+    *,
+    task_id: str,
+    run_tick_id: str,
+    status: str,
+    payload: dict | None = None,
+    worker_name: str | None = None,
+    failure_signature: str | None = None,
+    work_order_id: str | None = None,
+) -> None:
+    ensure_database(db_path)
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO attempts (task_id, work_order_id, run_tick_id, status, worker_name, failure_signature, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, work_order_id, run_tick_id, status, worker_name, failure_signature, payload_json),
+        )
+        conn.commit()
+
+
+def list_attempts_for_task(db_path: Path, task_id: str) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, task_id, work_order_id, run_tick_id, status, worker_name, failure_signature, payload_json, created_at, updated_at
+            FROM attempts
+            WHERE task_id = ?
+            ORDER BY id
+            """,
+            (task_id,),
+        ).fetchall()
+    return rows
+
+
+def acquire_lease(
+    db_path: Path,
+    *,
+    resource_type: str,
+    resource_id: str,
+    run_tick_id: str,
+    expires_at: str,
+) -> bool:
+    ensure_database(db_path)
+    now_expr = "CURRENT_TIMESTAMP"
+    with connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')",
+            (resource_type, resource_id),
+        )
+        existing = conn.execute(
+            "SELECT id FROM leases WHERE resource_type = ? AND resource_id = ?",
+            (resource_type, resource_id),
+        ).fetchone()
+        if existing:
+            conn.commit()
+            return False
+        conn.execute(
+            """
+            INSERT INTO leases (resource_type, resource_id, run_tick_id, owner_pid, heartbeat_at, expires_at, payload_json)
+            VALUES (?, ?, ?, ?, {now_expr}, ?, '{}')
+            """.replace("{now_expr}", now_expr),
+            (resource_type, resource_id, run_tick_id, os.getpid(), expires_at),
+        )
+        conn.commit()
+        return True
+
+
+def release_lease(db_path: Path, *, resource_type: str, resource_id: str) -> None:
+    if not db_path.exists():
+        return
+    with connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ?",
+            (resource_type, resource_id),
+        )
+        conn.commit()
+
+
+def save_manager_messages(
+    db_path: Path,
+    *,
+    task_id: str,
+    manager_backend: str,
+    messages: list[dict],
+    thread_key: str = "default",
+) -> None:
+    ensure_database(db_path)
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO manager_threads (task_id, manager_backend, thread_key, state_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(task_id, manager_backend, thread_key) DO UPDATE SET
+                state_json = excluded.state_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (task_id, manager_backend, thread_key, json.dumps({"messages": messages}, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def load_manager_messages(
+    db_path: Path,
+    *,
+    task_id: str,
+    manager_backend: str,
+    thread_key: str = "default",
+) -> list[dict]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT state_json
+            FROM manager_threads
+            WHERE task_id = ? AND manager_backend = ? AND thread_key = ?
+            """,
+            (task_id, manager_backend, thread_key),
+        ).fetchone()
+    if not row:
+        return []
+    try:
+        payload = json.loads(str(row["state_json"]))
+    except Exception:
+        return []
+    messages = payload.get("messages", [])
+    return list(messages) if isinstance(messages, list) else []

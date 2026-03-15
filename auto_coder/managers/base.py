@@ -11,6 +11,8 @@ class ReviewDecision:
     verdict: str
     feedback: str
     blockers: list[str] = field(default_factory=list)
+    next_work_order: dict[str, Any] | None = None
+    source: str = "manager"
 
 
 class ManagerBackend(ABC):
@@ -25,10 +27,28 @@ class ManagerBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_work_order(self, task: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    def create_work_order(
+        self,
+        task: dict[str, Any],
+        history: list[dict[str, Any]],
+        repo_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def review_attempt(self, task: dict[str, Any], attempt_context: dict[str, Any]) -> ReviewDecision:
+    def review_attempt(
+        self,
+        task: dict[str, Any],
+        work_order: dict[str, Any],
+        attempt_context: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> ReviewDecision:
         raise NotImplementedError
 
+    @abstractmethod
+    def load_thread(self, task_id: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_thread(self, task_id: str, thread_state: list[dict[str, Any]]) -> None:
+        raise NotImplementedError
