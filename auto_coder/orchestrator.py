@@ -242,6 +242,38 @@ Before finishing, write a file called AGENT_REPORT.json in the current directory
 {retry_block}"""
 
 
+# ═════════════════════════════════════════════════════════════ extracted modules
+
+from auto_coder.executor import run_tests as _run_tests_impl
+from auto_coder.git_ops import changed_files as _changed_files_impl
+from auto_coder.git_ops import create_worktree as _create_worktree_impl
+from auto_coder.git_ops import git as _git_impl
+from auto_coder.git_ops import remove_worktree as _remove_worktree_impl
+from auto_coder.policy import validate_changed_files as _validate_changed_files_impl
+from auto_coder.reports import ensure_dir as _ensure_impl
+from auto_coder.reports import load_json as _load_json_impl
+from auto_coder.reports import read_text as _read_impl
+from auto_coder.reports import save_json as _save_json_impl
+from auto_coder.reports import write_text as _write_impl
+from auto_coder.scheduler import RETRYABLE_STATUSES as _RETRYABLE_STATUSES_IMPL
+from auto_coder.scheduler import select_task as _select_task_impl
+from auto_coder.scheduler import should_retry as _should_retry_impl
+
+RETRYABLE_STATUSES = _RETRYABLE_STATUSES_IMPL
+_ensure = _ensure_impl
+_save_json = _save_json_impl
+_load_json = _load_json_impl
+_write = _write_impl
+_read = _read_impl
+_git = _git_impl
+_changed_files = _changed_files_impl
+_create_worktree = _create_worktree_impl
+validate_changed_files = _validate_changed_files_impl
+run_tests = _run_tests_impl
+should_retry = _should_retry_impl
+select_task = _select_task_impl
+
+
 # ══════════════════════════════════════════════════════════════════════ core loop
 
 def should_retry(status: str | None) -> bool:
@@ -472,7 +504,7 @@ def run_one_task(
         success = outcome in {"completed", "dry_run"}
         cleanup = config.get("cleanup_worktree_on_success") if success else config.get("cleanup_worktree_on_failure")
         if cleanup and worktree.exists():
-            _git(project_root, "worktree", "remove", "--force", str(worktree))
+            _remove_worktree_impl(project_root, worktree)
 
 
 def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
