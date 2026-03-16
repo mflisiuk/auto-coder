@@ -7,6 +7,8 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+IGNORED_RUNTIME_FILES = {"AGENT_REPORT.json"}
+
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -29,7 +31,10 @@ def changed_files(repo: Path) -> list[str]:
         part = line[3:] if len(line) > 3 else line
         if " -> " in part:
             part = part.split(" -> ", 1)[1]
-        files.append(part.strip())
+        normalized = part.strip()
+        if normalized in IGNORED_RUNTIME_FILES:
+            continue
+        files.append(normalized)
     return sorted(set(files))
 
 

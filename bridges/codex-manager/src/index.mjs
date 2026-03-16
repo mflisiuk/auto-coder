@@ -115,6 +115,7 @@ function buildArgs(payload, schemaPath) {
     ...modelArgs,
     ...configArgs,
     "--skip-git-repo-check",
+    "--ephemeral",
     "-s",
     "read-only",
     "--output-schema",
