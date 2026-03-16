@@ -300,19 +300,32 @@ def cmd_status(args: argparse.Namespace) -> int:
         raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
         tasks = raw.get("tasks", [])
 
+    # Progress summary
+    from auto_coder.storage import count_tasks_by_status
+    status_counts = count_tasks_by_status(state_db_path) if state_db_path.exists() else {}
+    total = sum(status_counts.values())
+    completed = status_counts.get("completed", 0)
+    failed = status_counts.get("failed", 0) + status_counts.get("quarantined", 0)
+    remaining = total - completed - failed
+
+    print(f"Progress: {completed}/{total} completed ({failed} failed, {remaining} remaining)")
+    print("-" * 85)
+
     state = _load_runtime_state(config)
 
     task_state = state.get("tasks", {})
-    print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'UPDATED'}")
+    print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'LAST RUN'}")
     print("-" * 85)
-    db_rows = list_task_runtime(state_db_path) if state_db_path.exists() else []
+    from auto_coder.storage import list_task_runtime_with_attempts
+    db_rows = list_task_runtime_with_attempts(state_db_path) if state_db_path.exists() else []
     if db_rows:
         for row in db_rows:
             payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
             attempts = payload.get("attempt_count", 0)
-            updated = (row["updated_at"] or "")[:16]
+            # Use last_attempt_at if available, otherwise fall back to task.updated_at
+            last_run = (row.get("last_attempt_at") or row.get("updated_at") or "")[:16]
             enabled = "" if payload.get("enabled", True) else " [disabled]"
-            print(f"{str(row['id']) + enabled:<35} {str(row['status']):<18} {str(attempts):<10} {updated}")
+            print(f"{str(row['id']) + enabled:<35} {str(row['status']):<18} {str(attempts):<10} {last_run}")
     else:
         for task in sorted(tasks, key=lambda t: int(t.get("priority", 100))):
             tid = task.get("id", "?")

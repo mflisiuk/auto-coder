@@ -253,6 +253,51 @@ def get_task_runtime(db_path: Path, task_id: str) -> sqlite3.Row | None:
     return row
 
 
+def get_task_last_attempt_time(db_path: Path, task_id: str) -> str | None:
+    """Get the most recent attempt's updated_at timestamp for a task."""
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT updated_at FROM attempts
+               WHERE task_id = ?
+               ORDER BY updated_at DESC
+               LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+        return str(row["updated_at"]) if row else None
+
+
+def list_task_runtime_with_attempts(db_path: Path) -> list[dict]:
+    """Return task runtime info with latest attempt timestamp."""
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT t.id, t.title, t.status, t.priority, t.payload_json, t.updated_at,
+                      a.updated_at as last_attempt_at
+               FROM tasks t
+               LEFT JOIN (
+                   SELECT task_id, MAX(updated_at) as updated_at
+                   FROM attempts
+                   GROUP BY task_id
+               ) a ON t.id = a.task_id
+               ORDER BY t.priority, t.id"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def count_tasks_by_status(db_path: Path) -> dict[str, int]:
+    """Count tasks grouped by status."""
+    if not db_path.exists():
+        return {}
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT status, COUNT(*) as count FROM tasks GROUP BY status"""
+        ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
+
+
 def upsert_work_order(
     db_path: Path,
     *,
