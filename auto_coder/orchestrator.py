@@ -319,8 +319,119 @@ def _repair_task_id(task_id: str) -> str:
     return f"repair-baseline::{task_id}"
 
 
+def _environment_repair_task_id(issue_slug: str) -> str:
+    return f"repair-environment::{issue_slug}"
+
+
 def _is_repair_task(task_id: str) -> bool:
     return task_id.startswith("repair-baseline::")
+
+
+def _is_environment_repair_task(task_id: str) -> bool:
+    return task_id.startswith("repair-environment::")
+
+
+def _is_any_repair_task(task_id: str) -> bool:
+    return _is_repair_task(task_id) or _is_environment_repair_task(task_id)
+
+
+def _environment_allowed_paths(task: dict[str, Any]) -> list[str]:
+    allowed: list[str] = [".auto-coder/", "scripts/", "bin/"]
+    allowed.extend(str(path) for path in task.get("allowed_paths", []))
+    return list(dict.fromkeys(path for path in allowed if path))
+
+
+def _classify_environment_failure(task: dict[str, Any], failure_summary: dict[str, Any]) -> dict[str, Any] | None:
+    corpus = "\n".join(
+        [*(str(command) for command in failure_summary.get("commands", [])), *(str(item) for item in failure_summary.get("excerpts", []))]
+    )
+    command_not_found = re.search(r"(?:^|[\s:])([A-Za-z0-9._+-]+): command not found", corpus)
+    if command_not_found:
+        missing_command = command_not_found.group(1).lower()
+        slug = f"missing-command-{re.sub(r'[^a-z0-9]+', '-', missing_command).strip('-')}"
+        return {
+            "issue_kind": "missing_command",
+            "issue_slug": slug,
+            "missing_command": missing_command,
+            "title": f"Repair environment: missing `{missing_command}` command",
+            "description": (
+                f"The execution environment is missing the `{missing_command}` command. "
+                "Fix the environment contract once so tasks stop failing on the same missing binary."
+            ),
+            "note": f"Environment missing command `{missing_command}`.",
+            "prompt": (
+                f"Fix the shared environment issue: `{missing_command}` command not found.\n"
+                "Prefer fixing task/config/tooling contracts in-repo so future tasks run in fresh worktrees.\n"
+                "Examples: replace `python` with `python3` in task commands, or add a safe compatibility shim.\n"
+                f"Representative failing commands: {', '.join(failure_summary.get('commands', [])[:3]) or 'unknown'}"
+            ),
+        }
+    return None
+
+
+def _queue_environment_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> str | None:
+    if not config.get("state_db_path") or not config.get("auto_create_environment_repair_tasks", True):
+        return None
+    if _is_environment_repair_task(task_id):
+        return None
+    env_issue = _classify_environment_failure(task, failure_summary)
+    if not env_issue:
+        return None
+
+    repair_task_id = _environment_repair_task_id(str(env_issue["issue_slug"]))
+    existing = get_task_runtime(config["state_db_path"], repair_task_id)
+    if existing is not None:
+        return repair_task_id
+
+    repair_task = {
+        "id": repair_task_id,
+        "title": str(env_issue["title"]),
+        "description": str(env_issue["description"]),
+        "priority": 0,
+        "enabled": True,
+        "depends_on": [],
+        "allowed_paths": _environment_allowed_paths(task),
+        "protected_paths": list(task.get("protected_paths", [])),
+        "setup_commands": list(task.get("setup_commands", [])),
+        "baseline_commands": list(failure_summary.get("commands", [])),
+        "completion_commands": list(failure_summary.get("commands", [])),
+        "acceptance_criteria": [
+            f"Representative environment command succeeds: {', '.join(failure_summary.get('commands', [])[:2]) or 'unknown'}",
+            f"Shared environment issue `{env_issue['issue_slug']}` is resolved.",
+        ],
+        "preferred_workers": list(task.get("preferred_workers", [])),
+        "risk_level": "normal",
+        "max_attempts_total": max(2, int(task.get("max_attempts_total", 6))),
+        "cooldown_minutes": int(task.get("cooldown_minutes", 60)),
+        "estimated_effort": "small",
+        "allow_no_changes": True,
+        "report_only": False,
+        "auto_generated": True,
+        "repair_kind": "environment",
+        "repair_issue_kind": str(env_issue["issue_kind"]),
+        "repair_issue_slug": str(env_issue["issue_slug"]),
+        "repair_source_run_id": parent_run_id,
+        "repair_failure_signature": str(failure_summary.get("signature", "")),
+        "repair_failure_commands": list(failure_summary.get("commands", [])),
+        "repair_failure_excerpts": list(failure_summary.get("excerpts", [])),
+        "prompt": str(env_issue["prompt"]),
+    }
+    set_task_runtime(
+        config["state_db_path"],
+        task_id=repair_task_id,
+        title=str(repair_task["title"]),
+        priority=int(repair_task["priority"]),
+        status="ready",
+        payload=repair_task,
+    )
+    return repair_task_id
 
 
 def _queue_baseline_repair_task(
@@ -333,7 +444,7 @@ def _queue_baseline_repair_task(
 ) -> str | None:
     if not config.get("state_db_path") or not config.get("auto_create_baseline_repair_tasks", True):
         return None
-    if _is_repair_task(task_id):
+    if _is_any_repair_task(task_id):
         return None
 
     repair_task_id = _repair_task_id(task_id)
@@ -393,6 +504,41 @@ def _queue_baseline_repair_task(
         payload=repair_task,
     )
     return repair_task_id
+
+
+def _queue_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> tuple[str | None, str]:
+    environment_task_id = _queue_environment_repair_task(
+        config,
+        task,
+        task_id=task_id,
+        failure_summary=failure_summary,
+        parent_run_id=parent_run_id,
+    )
+    if environment_task_id:
+        return environment_task_id, "environment"
+    baseline_task_id = _queue_baseline_repair_task(
+        config,
+        task,
+        task_id=task_id,
+        failure_summary=failure_summary,
+        parent_run_id=parent_run_id,
+    )
+    if baseline_task_id:
+        return baseline_task_id, "baseline"
+    return None, "none"
+
+
+def _updated_runtime_dependencies(task: dict[str, Any], repair_task_id: str, repair_kind: str) -> list[str]:
+    dependencies = [str(item) for item in task.get("runtime_depends_on", []) if str(item).strip()]
+    filtered = [item for item in dependencies if not _is_any_repair_task(item)]
+    return list(dict.fromkeys(filtered + [repair_task_id]))
 
 
 def _update_runtime_state(
@@ -861,7 +1007,7 @@ def run_one_task(
             )
             if not setup_ok:
                 failure_summary = _summarize_test_failures(report_dir, "setup-tests", setup_results)
-                repair_task_id = _queue_baseline_repair_task(
+                repair_task_id, repair_kind = _queue_repair_task(
                     config,
                     task,
                     task_id=task_id,
@@ -880,9 +1026,10 @@ def run_one_task(
                 }
                 if repair_task_id:
                     task_status = "waiting_for_dependency"
-                    note = f"{note}. Queued repair task {repair_task_id}."
+                    note = f"{note}. Queued {repair_kind} repair task {repair_task_id}."
                     extra["repair_task_id"] = repair_task_id
-                    extra["runtime_depends_on"] = list(dict.fromkeys(list(task.get("runtime_depends_on", [])) + [repair_task_id]))
+                    extra["repair_task_kind"] = repair_kind
+                    extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
                 elif config.get("auto_quarantine_failures", True):
                     task_status = "quarantined"
                 _update_runtime_state(
@@ -910,6 +1057,7 @@ def run_one_task(
                         "setup_tests": setup_results,
                         "failure_summary": failure_summary,
                         "repair_task_id": repair_task_id,
+                        "repair_task_kind": repair_kind,
                     },
                 )
                 return 1
@@ -921,7 +1069,7 @@ def run_one_task(
         )
         if not baseline_ok:
             failure_summary = _summarize_test_failures(report_dir, "baseline-tests", baseline_results)
-            repair_task_id = _queue_baseline_repair_task(
+            repair_task_id, repair_kind = _queue_repair_task(
                 config,
                 task,
                 task_id=task_id,
@@ -940,9 +1088,10 @@ def run_one_task(
             }
             if repair_task_id:
                 task_status = "waiting_for_dependency"
-                note = f"{note}. Queued repair task {repair_task_id}."
+                note = f"{note}. Queued {repair_kind} repair task {repair_task_id}."
                 extra["repair_task_id"] = repair_task_id
-                extra["runtime_depends_on"] = list(dict.fromkeys(list(task.get("runtime_depends_on", [])) + [repair_task_id]))
+                extra["repair_task_kind"] = repair_kind
+                extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
             elif config.get("auto_quarantine_failures", True):
                 task_status = "quarantined"
             _update_runtime_state(
@@ -970,6 +1119,7 @@ def run_one_task(
                     "baseline_tests": baseline_results,
                     "failure_summary": failure_summary,
                     "repair_task_id": repair_task_id,
+                    "repair_task_kind": repair_kind,
                 },
             )
             return 1

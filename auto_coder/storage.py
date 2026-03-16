@@ -441,6 +441,9 @@ def force_task_retry(db_path: Path, task_id: str, *, note: str, retry_after: str
             payload = {}
         payload["note"] = note
         payload["retry_after"] = retry_after
+        payload.pop("runtime_depends_on", None)
+        payload.pop("repair_task_id", None)
+        payload.pop("repair_task_kind", None)
         conn.execute(
             """
             UPDATE tasks

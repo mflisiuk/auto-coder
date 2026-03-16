@@ -71,6 +71,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "failure_block_threshold": 3,
         "auto_quarantine_failures": True,
         "auto_create_baseline_repair_tasks": True,
+        "auto_create_environment_repair_tasks": True,
         "agent_timeout_minutes": 45,
         "test_timeout_minutes": 20,
         "quota_cooldown_hours": 4,
@@ -173,6 +174,7 @@ max_attempts_per_task_per_run: 3
 failure_block_threshold: 3
 auto_quarantine_failures: true
 auto_create_baseline_repair_tasks: true
+auto_create_environment_repair_tasks: true
 agent_timeout_minutes: 45
 test_timeout_minutes: 20
 quota_cooldown_hours: 4

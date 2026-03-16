@@ -179,6 +179,37 @@ class TestStorage(unittest.TestCase):
             )
             self.assertTrue(reacquired)
 
+    def test_force_task_retry_clears_runtime_repair_dependencies(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.db"
+            ensure_database(db_path)
+            set_task_runtime(
+                db_path,
+                task_id="task-1",
+                title="Task 1",
+                priority=10,
+                status="waiting_for_dependency",
+                payload={
+                    "attempt_count": 1,
+                    "runtime_depends_on": ["repair-baseline::task-1"],
+                    "repair_task_id": "repair-baseline::task-1",
+                    "repair_task_kind": "baseline",
+                },
+            )
+            self.assertTrue(
+                force_task_retry(
+                    db_path,
+                    "task-1",
+                    note="retry",
+                    retry_after="2026-03-16T12:00:00+00:00",
+                )
+            )
+            payload = export_state(db_path)["tasks"]["task-1"]
+            self.assertEqual(payload["status"], "waiting_for_retry")
+            self.assertNotIn("runtime_depends_on", payload)
+            self.assertNotIn("repair_task_id", payload)
+            self.assertNotIn("repair_task_kind", payload)
+
     def test_expire_stale_leases_recognizes_iso_timestamps(self):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "state.db"
