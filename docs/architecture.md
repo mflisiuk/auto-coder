@@ -1,4 +1,6 @@
-# Architektura auto-coder v1
+# Architektura auto-coder
+
+Dokument dla deweloperów chcących zrozumieć lub rozbudować auto-coder.
 
 ## Struktura plików
 
@@ -6,84 +8,110 @@
 auto-coder/
 ├── auto_coder/
 │   ├── __init__.py
-│   ├── cli.py              # CLI entry point
-│   ├── manager.py          # Główny workflow engine
-│   ├── backends/
-│   │   ├── anthropic.py    # Anthropic backend
-│   │   └── codex.py        # Codex backend
-│   ├── workers/
-│   │   ├── cc.py           # Worker adapter
-│   │   ├── cch.py
-│   │   ├── ccg.py
-│   │   ├── codex.py
-│   │   ├── qwen.py
-│   │   └── gemini.py
-│   ├── planner/
-│   │   ├── __init__.py
-│   │   ├── synthesis.py    # Synteza planera
-│   │   └── routing.py      # Quota-aware routing
-│   ├── probes/
-│   │   └── quota.py        # Sondy dostępności kwotów
-│   └── storage/
-│       └── sqlite.py       # SQLite persistence
-├── docs/
-├── tests/
+│   ├── cli.py              # Główny interfejs CLI
+│   ├── bootstrap_brief.py  # Generowanie briefu z istniejących docs
+│   ├── planner/            # Moduł planowania
+│   ├── executor/           # Moduł wykonawczy
+│   ├── providers/          # Integracje z AI providerami
+│   └── db/                 # Warstwa danych (SQLite)
+├── docs/                   # Dokumentacja
+├── tests/                  # Testy
 ├── setup.py
-└── requirements.txt
+└── README.md
 ```
 
-## Jak działa kod
+## Komponenty
 
-### 1. Manager (workflow engine)
+### CLI (`cli.py`)
 
-```python
-# auto_coder/manager.py
-class Manager:
-    def tick(self):
-        # 1. Wybierz gotowy task
-        # 2. Stwórz work order
-        # 3. Uruchom workera
-        # 4. Wymagaj AGENT_REPORT.json
-        # 5. Odpal testy i policy checks
-        # 6. Reviewuj wynik
-        # 7. Retry lub zakończ
+Główne komendy:
+- `init` - inicjalizacja projektu
+- `bootstrap-brief` - generowanie briefu z istniejących dokumentów
+- `doctor` - diagnostyka środowiska
+- `plan` - generowanie backlogu
+- `run` - uruchomienie pętli wykonawczej
+
+### Bootstrap Brief (`bootstrap_brief.py`)
+
+Moduł skanujący istniejące repozytorium i generujący pliki briefu:
+- Analizuje `README.md`, `docs/*.md`
+- Ekstrahuje tytuły i sekcje
+- Generuje szablony `ROADMAP.md`, `PROJECT.md`, `PLANNING_HINTS.md`
+
+### Planner
+
+Syntezuje zadania z dokumentów wejściowych:
+- Parsuje `ROADMAP.md` i `PROJECT.md`
+- Używa AI do generowania tasków
+- Routuje do odpowiedniego providera (quota-aware)
+
+### Executor
+
+Pętla wykonawcza:
+- Pobiera taski z backlogu
+- Uruchamia w izolowanym worktree
+- Wykonuje policy checks
+- Commituje zmiany
+- Aktualizuje `work_progress.md`
+
+### Providers
+
+Warstwa abstrakcji dla backendów AI:
+- Anthropic provider
+- Codex provider
+- Quota probes - sprawdzanie dostępności
+
+### Database (SQLite)
+
+Przechowuje:
+- Backlog tasków
+- Historię wykonań
+- Statusy i metadane
+
+## Przepływ danych
+
 ```
-
-### 2. Backends
-
-Backendy generują backlog z briefu:
-
-- `anthropic` - używa API Anthropic
-- `codex` - używa Node bridge do `codex exec`
-
-### 3. Workers
-
-Workery wykonują zadania jako CLI w osobnym git worktree.
-
-### 4. Planner
-
-Syntezuje plan zadań i routuje do dostępnych providerów.
-
-### 5. Quota Probes
-
-Sondy sprawdzają dostępność kwotów przed routowaniem.
+[Brief Docs] → [Planner] → [Backlog DB] → [Executor] → [Git Commits]
+                    ↓           ↓              ↓
+               [Providers]  [SQLite]    [work_progress.md]
+```
 
 ## Jak rozbudować
 
-### Dodanie nowego backendu
+### Dodanie nowego providera
 
-1. Stwórz `auto_coder/backends/twoj_backend.py`
-2. Zaimplementuj interfejs `Backend`
-3. Zarejestruj w `manager.py`
+1. Stwórz `auto_coder/providers/new_provider.py`
+2. Zaimplementuj interfejs provider (quota check, generate)
+3. Zarejestruj w routerze
 
-### Dodanie nowego workera
+### Dodanie nowej komendy CLI
 
-1. Stwórz `auto_coder/workers/twoj_worker.py`
-2. Zaimplementuj interfejs `Worker`
-3. Dodaj adapter CLI
+1. Dodaj funkcję w `auto_coder/cli.py`
+2. Zarejestruj w parserze argumentów
+3. Udokumentuj w `docs/usage.md`
 
-### Dodanie nowej sondy
+### Rozszerzenie walidacji briefu
 
-1. Stwórz `auto_coder/probes/twoj_probe.py`
-2. Zaimplementuj `probe()` zwracające dostępność
-3. Podłącz do routingu
+1. Edytuj `auto_coder/validator.py`
+2. Dodaj nowe reguły walidacji
+3. Zaktualizuj `docs/brief-validation.md`
+
+## Testowanie
+
+```bash
+# Uruchom testy
+pytest tests/
+
+# Tryb debugowania
+export AUTO_CODER_DEBUG=1
+auto-coder run --dry-run
+```
+
+## Zasady bezpieczeństwa
+
+- Izolacja przez git worktree
+- Policy checks przed commit
+- Quota limits na providerów
+- Walidacja wejścia przed wykonaniem
+
+Więcej: [Operator runbook](docs/operator-runbook.md), [Pre-mortem](docs/pre-mortem.md)

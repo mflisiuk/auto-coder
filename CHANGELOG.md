@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-03-16] - Hardening operator workflows and progress reporting
+### Co się zmieniło
+- Rozszerzono `INPUT_SPEC.md` o rekomendowany plik `PLANNING_HINTS.md` dla konwencji repozytorium
+- Dodano `bootstrap-brief` jako opcjonalną komendę dla istniejących repozytoriów
+- Zaktualizowano flow startowe w README o `doctor --probe-live`, `plan` i `run --dry-run`
+- Dodano `work_progress.md` aktualizowany przy domknięciu taska
+- Rozbudowano dokumentację operatora o hardened workflows i progress reporting
+
+### Poprawki błędów (jesli sa)
+- Brak poprawek błędów w tej iteracji
+
 ## [2026-03-15] - Sondy kwotów i synteza planera
 ### Co się zmieniło
 - Dodano sondy dostępności kwotów dla providerów (quota probes)
