@@ -1,141 +1,86 @@
 # auto-coder
 
-> An autonomous coding manager: give it a product brief, it generates tasks, dispatches AI workers in isolated git worktrees, reviews results, commits, pushes, and opens PRs — all unattended.
+> Autonomiczny manager kodowania: otrzymuje brief projektu, generuje zadania, uruchamia AI workerów w izolowanych git worktrees, recenzuje wyniki, commituje, pushuje i otwiera PR-y — bez ręcznej interwencji.
 
-## What it does
+## Co to robi
 
-`auto-coder` is a Python workflow engine for teams that want to automate feature delivery. It reads product documentation (`ROADMAP.md`, `PROJECT.md`), generates a task backlog via an AI manager backend (`anthropic` or `codex`), runs workers in isolated git worktrees, reviews their output, and merges work into main — ticking forward each time you run it (or via cron).
+`auto-coder` to Pythonowy workflow engine dla zespołów chcących automatyzować dostarczanie feature'ów. Czyta dokumentację produktu (`ROADMAP.md`, `PROJECT.md`), generuje backlog przez AI managera (`anthropic` lub `codex`), uruchamia workerów w izolowanych środowiskach, recenzuje wyniki i merge'uje do main.
 
-**Key properties:**
-- One installation works for any number of repos — each repo just needs `.auto-coder/` config
-- Quota errors (`429`) are never counted as failures — the system waits patiently for quota reset
-- `PROGRESS.md` is written to your project root after every tick so GitHub always shows current status
-- Program stops cleanly when all tasks are `completed` or in terminal error state
-- Cron every 20 min is the recommended deployment model (no persistent daemon needed)
+**Kluczowe właściwości:**
+- Jedna instalacja działa dla dowolnej liczby repozytoriów
+- Błędy kwotowe (429) nie są zaliczane jako failure — system czeka na reset kwoty
+- `PROGRESS.md` jest aktualizowany po każdym ticku — zawsze widoczny na GitHub
+- Cron co 20 min to rekomendowany model deploymentu (bez persistent daemon)
 
-## Quick start
+## Szybki start
 
 ```bash
-# 1. Install once globally (works for all your repos)
+# 1. Instalacja globalna (działa dla wszystkich repozytoriów)
 git clone https://github.com/mflisiuk/auto-coder && cd auto-coder
 pip install -e .
 
-# 2. In your target repo — generate a brief from existing docs (optional)
+# 2. W swoim repozytorium — wygeneruj brief (opcjonalnie)
 auto-coder bootstrap-brief /path/to/your-repo
 
-# 3. Initialize auto-coder in your target repo
+# 3. Zainicjalizuj auto-coder w repozytorium
 cd /path/to/your-repo
 auto-coder init
 
-# 4. Set API key
-export ANTHROPIC_API_KEY=sk-ant-...   # or configure codex
+# 4. Ustaw klucz API
+export ANTHROPIC_API_KEY=sk-ant-...   # lub skonfiguruj codex
 
-# 5. Verify everything works
+# 5. Sprawdź czy wszystko działa
 auto-coder doctor --probe-live
 
-# 6. Generate task backlog from your brief
+# 6. Wygeneruj backlog zadań z briefu
 auto-coder plan
 
-# 7. Dry-run first — no actual code changes
+# 7. Najpierw dry-run — bez zmian w kodzie
 auto-coder run --dry-run
 
-# 8. Go live
+# 8. Tryb live
 auto-coder run --live
 ```
 
-## Multi-repo setup
+## Konfiguracja
 
-`auto-coder` is installed **once** globally. Each repository you want to automate needs its own `.auto-coder/` directory (created by `auto-coder init`). There is **no code duplication**.
-
-```
-/home/user/
-├── auto-coder/          ← installed once with pip install -e .
-├── repo-a/
-│   └── .auto-coder/     ← auto-coder init (separate config + state.db)
-├── repo-b/
-│   └── .auto-coder/
-└── repo-c/
-    └── .auto-coder/
-```
-
-**Cron for multiple repos (every 20 minutes each):**
-
-```cron
-# repo-a
-*/20 * * * * cd /home/user/repo-a && auto-coder run --live >> .auto-coder/cron.log 2>&1
-
-# repo-b
-*/20 * * * * cd /home/user/repo-b && auto-coder run --live >> .auto-coder/cron.log 2>&1
-
-# repo-c
-*/20 * * * * cd /home/user/repo-c && auto-coder run --live >> .auto-coder/cron.log 2>&1
-```
-
-Each repo manages its own state, quota tracking, and worker execution independently.
-
-## Configuration
-
-After `auto-coder init`, edit `.auto-coder/config.yaml`. Key options:
+Po `auto-coder init` edytuj `.auto-coder/config.yaml`:
 
 ```yaml
-dry_run: false          # set to false to actually run agents
+dry_run: false          # false = rzeczywiste uruchomienie agentów
+auto_commit: true       # commituj wyniki workerów
+auto_push: true         # pushuj branch do origin
+auto_pr: true           # otwórz PR przez gh CLI
+auto_merge: true        # auto-merge PR po utworzeniu
 
-# Git automation
-auto_commit: true       # commit worker output
-auto_push: true         # push branch to origin
-auto_pr: true           # open GitHub PR via gh CLI (requires gh)
-auto_merge: true        # auto-merge PR after creation
+default_worker: cc      # cc = Claude Code (free), cch = Claude Code (paid)
+fallback_worker: cch    # fallback gdy wyczerpano kwotę default_worker
 
-# Worker
-default_worker: cc      # cc = Claude Code (free tier), cch = Claude Code (paid)
-fallback_worker: cch    # fallback when quota exhausted on default_worker
-
-# Limits
-max_tasks_per_run: 1    # tasks per cron tick
+max_tasks_per_run: 1    # zadania na jeden tick crona
 max_attempts_per_task_per_run: 3
 failure_block_threshold: 3  # consecutive failures before task is blocked
 
-# Quota handling
-quota_cooldown_hours: 4     # wait time after 429 before retrying
+quota_cooldown_hours: 4     # czas oczekiwania po 429 przed retry
 ```
-
-**Quota errors are never counted as failures.** When a worker hits a 429 rate limit, the task enters `waiting_for_quota` status and resumes automatically on the next cron tick after the cooldown window.
 
 ## PROGRESS.md
 
-After every task execution, auto-coder writes `PROGRESS.md` to your project root. This file is always visible on GitHub and shows:
+Po każdym wykonaniu zadania auto-coder zapisuje `PROGRESS.md` w rootcie projektu z:
+- Podsumowaniem (Razem / Ukończone / W toku / Oczekujące / Błędy)
+- Statusem per task z emoji (✅ ⚙️ ⏳ 🔁 🚫 ❌)
+- Nazwą workera, liczbą prób, czasem trwania
+- Szczegółową sekcją błędów dla tasków zablokowanych
 
-- Summary counts (Total / Done / In progress / Not started / Errors)
-- Per-task status with emoji (✅ completed, ⚙️ running, ⏳ waiting for quota, 🔁 retrying, 🚫 blocked, ❌ failed)
-- Worker name, attempt count, start/end time, duration
-- Error reason for failed tasks
-- Detailed error section with last 3 attempt notes for blocked/quarantined tasks
+## Dokumentacja
 
-## Features
+- **[common-pitfalls.md](docs/common-pitfalls.md)** — typowe problemy i rozwiązania
+- **[setup.md](docs/setup.md)** — instalacja i konfiguracja krok po kroku
+- **[usage.md](docs/usage.md)** — pełny opis komend i workflow
+- **[operator-runbook.md](docs/operator-runbook.md)** — przewodnik dla operatora
+- **[provider-routing.md](docs/provider-routing.md)** — routing providerów AI
 
-- Brief validation and task generation via `anthropic` or `codex` manager backends
-- Tasks synced to SQLite — survives restarts, cron-safe
-- Quota-aware worker routing with automatic fallback chain (`cc` → `cch` → `gemini` → `qwen` → `codex`)
-- Workers run in isolated git worktrees — no interference with your working directory
-- AI manager reviews worker output; failing review triggers retry with context
-- Lease heartbeat system — long-running workers never get killed by stale lease expiry
-- `--loop` mode: run continuously until all tasks complete (`auto-coder run --live --loop`)
-- `doctor --probe-live` for real API health check
-- Auto-generated repair tasks when baseline tests fail
+## Wymagania
 
-## Documentation
-
-- **[Common pitfalls & solutions](docs/common-pitfalls.md)** — Read this first
-- [Setup & configuration](docs/setup.md)
-- [Usage guide](docs/usage.md)
-- [Architecture](docs/architecture.md)
-- [Execution model](docs/execution.md)
-- [Brief validation](docs/brief-validation.md)
-- [Cron & unattended mode](docs/cron.md)
-- [Input pack](docs/inputs.md)
-- [Operator runbook](docs/operator-runbook.md)
-- [Go-live checklist](docs/go-live-checklist.md)
-
-## Changelog
-
-[CHANGELOG.md](CHANGELOG.md)
+- Python 3.8+
+- Git
+- Opcjonalnie: `gh` CLI do automatycznych PR-ów

@@ -1,5 +1,24 @@
 # Changelog
 
+## [2026-03-16] - Autonomous execution hardening and setup orchestration
+### Co się zmieniło
+- Dodano w pełni autonomiczne wykonanie zadań z izolowanymi workerami w git worktrees
+- Zaimplementowano orchestrator z setup-aware task contracts (setup_commands, baseline_tests, main_test)
+- Dodano automatyczne zadania naprawcze (repair tasks) gdy baseline testy nie przejdą
+- Wprowadzono deduplikację blockerów środowiskowych i auto-kwarantannę dla baseline blockerów
+- Rozbudowano obsługę błędów kwotowych — 429 nie jest zaliczane jako failure, task czeka w `waiting_for_quota`
+- Dodano fallback chain workerów: cc → cch → gemini → qwen → codex
+- Ulepszono system lease z heartbeatem dla długotrwałych workerów
+- Dodano tryb `--loop` do ciągłego działania aż do ukończenia wszystkich tasków
+- Zaktualizowano `PROGRESS.md` z emoji statusów i szczegółowymi sekcjami błędów
+- Poprawiono komendę `doctor --probe-live` o realny health check API
+
+### Poprawki błędów
+- Naprawiono normalizację python → python3 w komendach baseline dla repair tasks
+- Naprawiono odblokowywanie zawieszonych łańcuchów naprawczych i stripowanie setup_commands z repair tasks
+- Ujednolicono stan SQLite i retry leases po restartach
+- Naprawiono hardening wykonania workerów i artefaktów runtime
+
 ## [2026-03-16] - Hardening operator workflows and progress reporting
 ### Co się zmieniło
 - Rozszerzono `INPUT_SPEC.md` o rekomendowany plik `PLANNING_HINTS.md` dla konwencji repozytorium
