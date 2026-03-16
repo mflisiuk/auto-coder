@@ -406,6 +406,17 @@ def _queue_environment_repair_task(
         )
         return repair_task_id
 
+    # Normalize commands for repair task baseline: python -> python3
+    def _normalize_python_command(cmd: str) -> str:
+        """Replace bare 'python -m' with 'python3 -m' for better compatibility."""
+        cmd_str = str(cmd).strip()
+        # Only replace 'python -m' at start or after a separator (not 'python3 -m', 'other-python -m', etc.)
+        import re as _re
+        return _re.sub(r'(^|\s)python\s+-m', r'\1python3 -m', cmd_str)
+
+    raw_commands = list(failure_summary.get("commands", []))
+    normalized_commands = [_normalize_python_command(c) for c in raw_commands]
+
     repair_task = {
         "id": repair_task_id,
         "title": str(env_issue["title"]),
@@ -416,10 +427,10 @@ def _queue_environment_repair_task(
         "allowed_paths": _environment_allowed_paths(task),
         "protected_paths": list(task.get("protected_paths", [])),
         "setup_commands": [],
-        "baseline_commands": list(failure_summary.get("commands", [])),
-        "completion_commands": list(failure_summary.get("commands", [])),
+        "baseline_commands": normalized_commands,
+        "completion_commands": normalized_commands,
         "acceptance_criteria": [
-            f"Representative environment command succeeds: {', '.join(failure_summary.get('commands', [])[:2]) or 'unknown'}",
+            f"Representative environment command succeeds: {', '.join(normalized_commands[:2]) or 'unknown'}",
             f"Shared environment issue `{env_issue['issue_slug']}` is resolved.",
         ],
         "preferred_workers": list(task.get("preferred_workers", [])),
@@ -469,6 +480,16 @@ def _queue_baseline_repair_task(
         return repair_task_id
 
     base_dependencies = list(task.get("depends_on", [])) + list(task.get("runtime_depends_on", []))
+
+    # Normalize commands: python -> python3 (same as environment repair)
+    def _normalize_python_command(cmd: str) -> str:
+        cmd_str = str(cmd).strip()
+        import re as _re
+        return _re.sub(r'(^|\s)python\s+-m', r'\1python3 -m', cmd_str)
+
+    raw_baseline = list(_baseline_commands(task))
+    normalized_baseline = [_normalize_python_command(c) for c in raw_baseline]
+
     repair_task = {
         "id": repair_task_id,
         "title": f"Repair baseline for {task.get('title', task_id)}",
@@ -482,8 +503,8 @@ def _queue_baseline_repair_task(
         "allowed_paths": list(task.get("allowed_paths", [])),
         "protected_paths": list(task.get("protected_paths", [])),
         "setup_commands": [],
-        "baseline_commands": list(_baseline_commands(task)),
-        "completion_commands": list(_baseline_commands(task)),
+        "baseline_commands": normalized_baseline,
+        "completion_commands": normalized_baseline,
         "acceptance_criteria": [
             "Baseline commands pass in a fresh worktree.",
             f"Unblocks parent task {task_id}.",
