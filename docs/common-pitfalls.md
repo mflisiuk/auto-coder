@@ -129,14 +129,41 @@ manager_backend: anthropic  # Use Claude
 
 **Problem:**
 ```yaml
-default_worker: codex
-# Codex quota exhausted → no worker available → BLOCKED
+default_worker: ccg
+# ccg quota exhausted → no worker available → BLOCKED
 ```
 
-**Solution:**
+**Solution - Multi-level fallback chain:**
 ```yaml
-default_worker: codex
-fallback_worker: cc
+# Worker fallback chain: ccg → cch → gemini → qwen → claude → codex
+default_worker: ccg
+fallback_worker: cch
+
+providers:
+  ccg:
+    token_limit_daily: 100000
+    quota_threshold: 0.80
+    fallback: cch
+  cch:
+    token_limit_daily: 200000
+    quota_threshold: 0.90
+    fallback: gemini
+  gemini:
+    token_limit_daily: 100000
+    quota_threshold: 0.80
+    fallback: qwen
+  qwen:
+    token_limit_daily: 100000
+    quota_threshold: 0.80
+    fallback: claude
+  claude:
+    token_limit_daily: 500000
+    quota_threshold: 0.90
+    fallback: codex
+  codex:
+    token_limit_daily: 100000
+    quota_threshold: 0.80
+    fallback: null  # End of chain
 
 providers:
   codex:
