@@ -20,7 +20,7 @@ from auto_coder.managers.base import ReviewDecision
 from auto_coder.managers.codex_bridge import CodexManagerBridge
 from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.prompts.worker_instruction import build_worker_prompt
-from auto_coder.progress import write_work_progress
+from auto_coder.progress import write_project_progress, write_work_progress
 from auto_coder.reviewer import review_attempt
 from auto_coder.router import ProviderRouter
 from auto_coder.storage import (
@@ -989,7 +989,10 @@ def run_one_task(
     outcome = "running"
 
     prev = state.get("tasks", {}).get(task_id, {})
-    attempt_count = int(prev.get("attempt_count", 0)) + (0 if config["dry_run"] else 1)
+    prev_attempt_count = int(prev.get("attempt_count", 0))
+    # Quota exhaustion never counts against attempt limits — it is an external constraint,
+    # not a development failure. Other failures increment the counter.
+    attempt_count = prev_attempt_count + (0 if config["dry_run"] else 1)
     protected_paths = list(task.get("protected_paths") or []) + list(config.get("protected_paths", []))
     allow_no_changes = bool(task.get("allow_no_changes", False))
     report_only = bool(task.get("report_only", False))
@@ -1301,7 +1304,7 @@ def run_one_task(
                     branch=branch,
                     report_dir=report_dir,
                     note=f"Quota exhausted on {provider}. Retry after {retry_after}.",
-                    extra={"attempt_count": attempt_count, "retry_after": retry_after, "provider": provider},
+                    extra={"attempt_count": prev_attempt_count, "retry_after": retry_after, "provider": provider},
                     worker_name=provider,
                     work_order_id=work_order_id,
                     work_order_status="quota_delayed",
@@ -1664,6 +1667,16 @@ def run_one_task(
             _remove_worktree_impl(project_root, worktree)
         if config.get("state_db_path") and lease_acquired:
             release_lease(config["state_db_path"], resource_type="task", resource_id=task_id)
+        # Always update PROGRESS.md in the project root so GitHub shows current state.
+        try:
+            if config.get("tasks_path") and config.get("state_db_path"):
+                write_project_progress(
+                    project_root,
+                    tasks_path=config["tasks_path"],
+                    state_db_path=config["state_db_path"],
+                )
+        except Exception:
+            pass
 
 
 def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
@@ -1693,6 +1706,7 @@ def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
                 for spec in fresh:
                     if str(spec.get("id")) not in existing_ids:
                         tasks.append(spec)
+                state.update(export_state(config["state_db_path"]))
     return exit_code
 
 
@@ -1718,9 +1732,18 @@ def _run_loop(config: dict[str, Any], tasks: list[dict], state: dict, *, max_tic
 
         task = select_task(tasks, state)
         if not task:
-            completed = sum(1 for t in state.get("tasks", {}).values() if t.get("status") == "completed")
-            total = len(state.get("tasks", {}))
-            print(f"[loop] No ready tasks — stopping. {completed}/{total} tasks completed.")
+            task_states = state.get("tasks", {})
+            completed = sum(1 for t in task_states.values() if t.get("status") == "completed")
+            terminal = sum(1 for t in task_states.values() if t.get("status") in {"completed", "blocked", "quarantined", "abandoned"})
+            waiting = sum(1 for t in task_states.values() if t.get("status") in {"waiting_for_quota", "waiting_for_retry"})
+            total = len(tasks)
+            if waiting and terminal < total:
+                print(
+                    f"[loop] No tasks ready right now — {waiting} task(s) waiting for quota/retry. "
+                    f"{completed}/{total} completed. Stopping; re-run after cooldown."
+                )
+            else:
+                print(f"[loop] All tasks done. {completed}/{total} completed, {terminal - completed} in terminal error.")
             break
 
         tick += 1
@@ -1737,6 +1760,17 @@ def _run_loop(config: dict[str, Any], tasks: list[dict], state: dict, *, max_tic
 
     if tick >= max_ticks:
         print(f"[loop] Reached max_ticks={max_ticks} — stopping.")
+
+    # Write final PROGRESS.md snapshot.
+    try:
+        if config.get("tasks_path") and config.get("state_db_path"):
+            write_project_progress(
+                config["project_root"],
+                tasks_path=config["tasks_path"],
+                state_db_path=config["state_db_path"],
+            )
+    except Exception:
+        pass
 
     return exit_code
 
