@@ -13,6 +13,7 @@ class TaskStatus(StrEnum):
     RUNNING = "running"
     WAITING_FOR_RETRY = "waiting_for_retry"
     WAITING_FOR_QUOTA = "waiting_for_quota"
+    QUARANTINED = "quarantined"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     ABANDONED = "abandoned"

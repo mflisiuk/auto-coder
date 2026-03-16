@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -115,6 +116,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
 """
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def ensure_database(db_path: Path) -> Path:
     """Create the SQLite database and schema if it does not exist."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +223,25 @@ def list_task_runtime(db_path: Path) -> list[sqlite3.Row]:
     return rows
 
 
+def list_task_specs(db_path: Path) -> list[dict]:
+    """Return task payloads from SQLite ordered like the scheduler sees them."""
+    specs: list[dict] = []
+    for row in list_task_runtime(db_path):
+        try:
+            payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("id", str(row["id"]))
+        payload.setdefault("title", str(row["title"]))
+        payload.setdefault("priority", int(row["priority"]))
+        payload.setdefault("enabled", True)
+        payload["status"] = str(row["status"])
+        specs.append(payload)
+    return specs
+
+
 def get_task_runtime(db_path: Path, task_id: str) -> sqlite3.Row | None:
     if not db_path.exists():
         return None
@@ -227,6 +251,51 @@ def get_task_runtime(db_path: Path, task_id: str) -> sqlite3.Row | None:
             (task_id,),
         ).fetchone()
     return row
+
+
+def get_task_last_attempt_time(db_path: Path, task_id: str) -> str | None:
+    """Get the most recent attempt's updated_at timestamp for a task."""
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT updated_at FROM attempts
+               WHERE task_id = ?
+               ORDER BY updated_at DESC
+               LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+        return str(row["updated_at"]) if row else None
+
+
+def list_task_runtime_with_attempts(db_path: Path) -> list[dict]:
+    """Return task runtime info with latest attempt timestamp."""
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT t.id, t.title, t.status, t.priority, t.payload_json, t.updated_at,
+                      a.updated_at as last_attempt_at
+               FROM tasks t
+               LEFT JOIN (
+                   SELECT task_id, MAX(updated_at) as updated_at
+                   FROM attempts
+                   GROUP BY task_id
+               ) a ON t.id = a.task_id
+               ORDER BY t.priority, t.id"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def count_tasks_by_status(db_path: Path) -> dict[str, int]:
+    """Count tasks grouped by status."""
+    if not db_path.exists():
+        return {}
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT status, COUNT(*) as count FROM tasks GROUP BY status"""
+        ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
 
 
 def upsert_work_order(
@@ -417,6 +486,9 @@ def force_task_retry(db_path: Path, task_id: str, *, note: str, retry_after: str
             payload = {}
         payload["note"] = note
         payload["retry_after"] = retry_after
+        payload.pop("runtime_depends_on", None)
+        payload.pop("repair_task_id", None)
+        payload.pop("repair_task_kind", None)
         conn.execute(
             """
             UPDATE tasks
@@ -509,10 +581,11 @@ def acquire_lease(
 ) -> bool:
     ensure_database(db_path)
     now_expr = "CURRENT_TIMESTAMP"
+    now_iso = _now_iso()
     with connect(db_path) as conn:
         conn.execute(
-            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')",
-            (resource_type, resource_id),
+            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+            (resource_type, resource_id, now_iso),
         )
         existing = conn.execute(
             "SELECT id FROM leases WHERE resource_type = ? AND resource_id = ?",
@@ -674,18 +747,44 @@ def latest_quota_snapshots(db_path: Path) -> list[sqlite3.Row]:
     return rows
 
 
-def expire_stale_leases(db_path: Path) -> list[sqlite3.Row]:
+def update_lease_heartbeat(db_path: Path, *, resource_type: str, resource_id: str) -> None:
+    """Renew the heartbeat timestamp for an active lease so it is not expired."""
+    if not db_path.exists():
+        return
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE leases SET heartbeat_at = CURRENT_TIMESTAMP WHERE resource_type = ? AND resource_id = ?",
+            (resource_type, resource_id),
+        )
+        conn.commit()
+
+
+def expire_stale_leases(db_path: Path, *, heartbeat_grace_seconds: int = 90) -> list[sqlite3.Row]:
+    """Expire leases whose expires_at has passed AND whose heartbeat is stale.
+
+    A lease with a recent heartbeat is considered still-active even if expires_at
+    has technically passed, preventing false interruptions of long-running workers.
+    """
     if not db_path.exists():
         return []
+    now_iso = _now_iso()
+    heartbeat_cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=heartbeat_grace_seconds)
+    ).replace(microsecond=0).isoformat()
     with connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT id, resource_type, resource_id, run_tick_id, expires_at
             FROM leases
-            WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')
-            """
+            WHERE expires_at IS NOT NULL AND expires_at <= ?
+              AND (heartbeat_at IS NULL OR heartbeat_at <= ?)
+            """,
+            (now_iso, heartbeat_cutoff),
         ).fetchall()
-        conn.execute("DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')")
+        conn.execute(
+            "DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= ? AND (heartbeat_at IS NULL OR heartbeat_at <= ?)",
+            (now_iso, heartbeat_cutoff),
+        )
         conn.commit()
     return rows
 

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,19 +20,23 @@ from auto_coder.managers.base import ReviewDecision
 from auto_coder.managers.codex_bridge import CodexManagerBridge
 from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.prompts.worker_instruction import build_worker_prompt
-from auto_coder.progress import write_work_progress
+from auto_coder.progress import write_project_progress, write_work_progress
 from auto_coder.reviewer import review_attempt
 from auto_coder.router import ProviderRouter
 from auto_coder.storage import (
     acquire_lease,
     create_run_tick,
+    export_state,
+    get_task_runtime,
     latest_work_order_for_task,
     list_attempts_for_task,
     list_work_orders_for_task,
+    list_task_specs,
     record_attempt,
     recover_interrupted_runs,
     release_lease,
     set_task_runtime,
+    update_lease_heartbeat,
     upsert_work_order,
     update_run_tick,
 )
@@ -236,6 +243,12 @@ def _failure_signature(status: str, note: str = "") -> str:
     return base[:200]
 
 
+def _hash_signature(prefix: str, parts: list[str]) -> str:
+    raw = " | ".join(part.strip() for part in parts if part and part.strip())
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}:{digest}"
+
+
 def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
     try:
         start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
@@ -247,6 +260,326 @@ def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
     return max(int((end - start).total_seconds()), 0)
+
+
+def _extract_test_identifiers(text: str) -> list[str]:
+    seen: set[str] = set()
+    identifiers: list[str] = []
+    for match in re.findall(r"([A-Za-z0-9_\\\\]+::[A-Za-z0-9_]+)", text):
+        if match in seen:
+            continue
+        seen.add(match)
+        identifiers.append(match)
+    return identifiers
+
+
+def _summarize_test_failures(report_dir: Path, prefix: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    commands: list[str] = []
+    identifiers: list[str] = []
+    excerpts: list[str] = []
+
+    for result in results:
+        if result.get("passed"):
+            continue
+        commands.append(str(result.get("command", "")))
+        index = int(result.get("index", 0))
+        stdout = _read(report_dir / prefix / f"test-{index:02d}.stdout.log")
+        stderr = _read(report_dir / prefix / f"test-{index:02d}.stderr.log")
+        combined = "\n".join(part for part in (stdout, stderr) if part)
+        for identifier in _extract_test_identifiers(combined):
+            if identifier not in identifiers:
+                identifiers.append(identifier)
+        interesting_lines = []
+        for line in combined.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if "::" in stripped or "FAIL" in stripped or "ERROR" in stripped or "Exception" in stripped:
+                interesting_lines.append(stripped)
+            if len(interesting_lines) >= 4:
+                break
+        if not interesting_lines and combined.strip():
+            interesting_lines.append(combined.strip().splitlines()[-1][:180])
+        excerpts.extend(interesting_lines[:4])
+
+    note_parts: list[str] = []
+    if commands:
+        note_parts.append(f"commands={', '.join(commands[:2])}")
+    if identifiers:
+        note_parts.append(f"failures={', '.join(identifiers[:3])}")
+    if excerpts:
+        note_parts.append(f"excerpt={excerpts[0][:120]}")
+    note = "; ".join(note_parts) or "baseline test failure"
+    signature = _hash_signature("baseline_failed", commands + identifiers + excerpts[:3])
+    return {
+        "commands": commands,
+        "identifiers": identifiers,
+        "excerpts": excerpts[:6],
+        "note": note,
+        "signature": signature,
+    }
+
+
+def _repair_task_id(task_id: str) -> str:
+    return f"repair-baseline::{task_id}"
+
+
+def _environment_repair_task_id(issue_slug: str) -> str:
+    return f"repair-environment::{issue_slug}"
+
+
+def _is_repair_task(task_id: str) -> bool:
+    return task_id.startswith("repair-baseline::")
+
+
+def _is_environment_repair_task(task_id: str) -> bool:
+    return task_id.startswith("repair-environment::")
+
+
+def _is_any_repair_task(task_id: str) -> bool:
+    return _is_repair_task(task_id) or _is_environment_repair_task(task_id)
+
+
+def _environment_allowed_paths(task: dict[str, Any]) -> list[str]:
+    allowed: list[str] = [".auto-coder/", "scripts/", "bin/"]
+    allowed.extend(str(path) for path in task.get("allowed_paths", []))
+    return list(dict.fromkeys(path for path in allowed if path))
+
+
+def _classify_environment_failure(task: dict[str, Any], failure_summary: dict[str, Any]) -> dict[str, Any] | None:
+    corpus = "\n".join(
+        [*(str(command) for command in failure_summary.get("commands", [])), *(str(item) for item in failure_summary.get("excerpts", []))]
+    )
+    command_not_found = re.search(r"(?:^|[\s:])([A-Za-z0-9._+-]+): command not found", corpus)
+    if command_not_found:
+        missing_command = command_not_found.group(1).lower()
+        slug = f"missing-command-{re.sub(r'[^a-z0-9]+', '-', missing_command).strip('-')}"
+        return {
+            "issue_kind": "missing_command",
+            "issue_slug": slug,
+            "missing_command": missing_command,
+            "title": f"Repair environment: missing `{missing_command}` command",
+            "description": (
+                f"The execution environment is missing the `{missing_command}` command. "
+                "Fix the environment contract once so tasks stop failing on the same missing binary."
+            ),
+            "note": f"Environment missing command `{missing_command}`.",
+            "prompt": (
+                f"Fix the shared environment issue: `{missing_command}` command not found.\n"
+                "Prefer fixing task/config/tooling contracts in-repo so future tasks run in fresh worktrees.\n"
+                "Examples: replace `python` with `python3` in task commands, or add a safe compatibility shim.\n"
+                f"Representative failing commands: {', '.join(failure_summary.get('commands', [])[:3]) or 'unknown'}"
+            ),
+        }
+    return None
+
+
+def _queue_environment_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> str | None:
+    if not config.get("state_db_path") or not config.get("auto_create_environment_repair_tasks", True):
+        return None
+    if _is_environment_repair_task(task_id):
+        return None
+    env_issue = _classify_environment_failure(task, failure_summary)
+    if not env_issue:
+        return None
+
+    repair_task_id = _environment_repair_task_id(str(env_issue["issue_slug"]))
+    existing = get_task_runtime(config["state_db_path"], repair_task_id)
+    if existing is not None:
+        status = str(existing["status"])
+        if status not in {"quarantined", "blocked", "abandoned"}:
+            return repair_task_id
+        try:
+            payload = json.loads(str(existing["payload_json"])) if existing["payload_json"] else {}
+        except Exception:
+            payload = {}
+        set_task_runtime(
+            config["state_db_path"],
+            task_id=repair_task_id,
+            title=str(existing["title"]),
+            priority=int(existing.get("priority", 0)),
+            status="ready",
+            payload=payload,
+        )
+        return repair_task_id
+
+    # Normalize commands for repair task baseline: python -> python3
+    def _normalize_python_command(cmd: str) -> str:
+        """Replace bare 'python -m' with 'python3 -m' for better compatibility."""
+        cmd_str = str(cmd).strip()
+        # Only replace 'python -m' at start or after a separator (not 'python3 -m', 'other-python -m', etc.)
+        import re as _re
+        return _re.sub(r'(^|\s)python\s+-m', r'\1python3 -m', cmd_str)
+
+    raw_commands = list(failure_summary.get("commands", []))
+    normalized_commands = [_normalize_python_command(c) for c in raw_commands]
+
+    repair_task = {
+        "id": repair_task_id,
+        "title": str(env_issue["title"]),
+        "description": str(env_issue["description"]),
+        "priority": 0,
+        "enabled": True,
+        "depends_on": [],
+        "allowed_paths": _environment_allowed_paths(task),
+        "protected_paths": list(task.get("protected_paths", [])),
+        "setup_commands": [],
+        "baseline_commands": normalized_commands,
+        "completion_commands": normalized_commands,
+        "acceptance_criteria": [
+            f"Representative environment command succeeds: {', '.join(normalized_commands[:2]) or 'unknown'}",
+            f"Shared environment issue `{env_issue['issue_slug']}` is resolved.",
+        ],
+        "preferred_workers": list(task.get("preferred_workers", [])),
+        "risk_level": "normal",
+        "max_attempts_total": max(2, int(task.get("max_attempts_total", 6))),
+        "cooldown_minutes": int(task.get("cooldown_minutes", 60)),
+        "estimated_effort": "small",
+        "allow_no_changes": True,
+        "report_only": False,
+        "auto_generated": True,
+        "repair_kind": "environment",
+        "repair_issue_kind": str(env_issue["issue_kind"]),
+        "repair_issue_slug": str(env_issue["issue_slug"]),
+        "repair_source_run_id": parent_run_id,
+        "repair_failure_signature": str(failure_summary.get("signature", "")),
+        "repair_failure_commands": list(failure_summary.get("commands", [])),
+        "repair_failure_excerpts": list(failure_summary.get("excerpts", [])),
+        "prompt": str(env_issue["prompt"]),
+    }
+    set_task_runtime(
+        config["state_db_path"],
+        task_id=repair_task_id,
+        title=str(repair_task["title"]),
+        priority=int(repair_task["priority"]),
+        status="ready",
+        payload=repair_task,
+    )
+    return repair_task_id
+
+
+def _queue_baseline_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> str | None:
+    if not config.get("state_db_path") or not config.get("auto_create_baseline_repair_tasks", True):
+        return None
+    if _is_any_repair_task(task_id):
+        return None
+
+    repair_task_id = _repair_task_id(task_id)
+    existing = get_task_runtime(config["state_db_path"], repair_task_id)
+    if existing is not None and str(existing["status"]) not in {"completed", "quarantined", "blocked", "abandoned"}:
+        return repair_task_id
+
+    base_dependencies = list(task.get("depends_on", [])) + list(task.get("runtime_depends_on", []))
+
+    # Normalize commands: python -> python3 (same as environment repair)
+    def _normalize_python_command(cmd: str) -> str:
+        cmd_str = str(cmd).strip()
+        import re as _re
+        return _re.sub(r'(^|\s)python\s+-m', r'\1python3 -m', cmd_str)
+
+    raw_baseline = list(_baseline_commands(task))
+    normalized_baseline = [_normalize_python_command(c) for c in raw_baseline]
+
+    repair_task = {
+        "id": repair_task_id,
+        "title": f"Repair baseline for {task.get('title', task_id)}",
+        "description": (
+            "Automatically generated unblocker task. Fix the failing baseline and do not implement "
+            "the parent feature beyond what is required to make baseline commands pass."
+        ),
+        "priority": max(int(task.get("priority", 100)) - 1, 0),
+        "enabled": True,
+        "depends_on": base_dependencies,
+        "allowed_paths": list(task.get("allowed_paths", [])),
+        "protected_paths": list(task.get("protected_paths", [])),
+        "setup_commands": [],
+        "baseline_commands": normalized_baseline,
+        "completion_commands": normalized_baseline,
+        "acceptance_criteria": [
+            "Baseline commands pass in a fresh worktree.",
+            f"Unblocks parent task {task_id}.",
+        ],
+        "preferred_workers": list(task.get("preferred_workers", [])),
+        "risk_level": str(task.get("risk_level", "normal")),
+        "max_attempts_total": max(2, int(task.get("max_attempts_total", 6))),
+        "cooldown_minutes": int(task.get("cooldown_minutes", 60)),
+        "estimated_effort": "small",
+        "allow_no_changes": True,
+        "report_only": False,
+        "auto_generated": True,
+        "repair_kind": "baseline",
+        "repair_target_task_id": task_id,
+        "repair_source_run_id": parent_run_id,
+        "repair_failure_signature": str(failure_summary.get("signature", "")),
+        "repair_failure_identifiers": list(failure_summary.get("identifiers", [])),
+        "repair_failure_commands": list(failure_summary.get("commands", [])),
+        "repair_failure_excerpts": list(failure_summary.get("excerpts", [])),
+        "prompt": (
+            f"Repair the failing baseline for parent task `{task_id}`.\n"
+            f"Failure signature: {failure_summary.get('signature', '')}\n"
+            f"Failing tests: {', '.join(failure_summary.get('identifiers', [])[:5]) or 'unknown'}\n"
+            f"Failing commands: {', '.join(failure_summary.get('commands', [])[:2]) or 'unknown'}\n"
+            "Goal: make baseline commands pass in a fresh worktree. Do not implement unrelated feature work."
+        ),
+    }
+    set_task_runtime(
+        config["state_db_path"],
+        task_id=repair_task_id,
+        title=str(repair_task["title"]),
+        priority=int(repair_task["priority"]),
+        status="ready",
+        payload=repair_task,
+    )
+    return repair_task_id
+
+
+def _queue_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> tuple[str | None, str]:
+    environment_task_id = _queue_environment_repair_task(
+        config,
+        task,
+        task_id=task_id,
+        failure_summary=failure_summary,
+        parent_run_id=parent_run_id,
+    )
+    if environment_task_id:
+        return environment_task_id, "environment"
+    baseline_task_id = _queue_baseline_repair_task(
+        config,
+        task,
+        task_id=task_id,
+        failure_summary=failure_summary,
+        parent_run_id=parent_run_id,
+    )
+    if baseline_task_id:
+        return baseline_task_id, "baseline"
+    return None, "none"
+
+
+def _updated_runtime_dependencies(task: dict[str, Any], repair_task_id: str, repair_kind: str) -> list[str]:
+    dependencies = [str(item) for item in task.get("runtime_depends_on", []) if str(item).strip()]
+    filtered = [item for item in dependencies if not _is_any_repair_task(item)]
+    return list(dict.fromkeys(filtered + [repair_task_id]))
 
 
 def _update_runtime_state(
@@ -491,16 +824,33 @@ def _load_history_for_task(config: dict[str, Any], task_id: str) -> list[dict[st
 def _resolve_manager_backend(config: dict[str, Any], task: dict[str, Any]):
     if not config.get("manager_enabled", True):
         return None
+
+    # Support manager fallback: codex -> anthropic
     backend_name = str(config.get("manager_backend", "anthropic")).strip().lower()
-    backend_cls = {
+    fallback_name = str(config.get("manager_fallback", "anthropic")).strip().lower()
+
+    backends = {
         "anthropic": AnthropicManagerBackend,
         "codex": CodexManagerBridge,
-    }.get(backend_name)
+    }
+
+    # Try primary backend
+    backend_cls = backends.get(backend_name)
     if backend_cls is None:
         raise RuntimeError(f"Unsupported manager backend: {backend_name}")
-    if not backend_cls.is_available():
-        raise RuntimeError(f"Manager backend unavailable: {backend_name}")
-    return backend_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    if backend_cls.is_available():
+        return backend_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    # Try fallback backend
+    fallback_cls = backends.get(fallback_name)
+    if fallback_cls is None:
+        raise RuntimeError(f"Unsupported manager fallback: {fallback_name}")
+
+    if fallback_cls.is_available():
+        return fallback_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    raise RuntimeError(f"Manager backends unavailable: {backend_name} (primary), {fallback_name} (fallback)")
 
 
 def _recover_runtime(config: dict[str, Any], state: dict[str, Any]) -> dict[str, list[str]]:
@@ -511,6 +861,31 @@ def _recover_runtime(config: dict[str, Any], state: dict[str, Any]) -> dict[str,
         state.setdefault("tasks", {}).setdefault(task_id, {})
         state["tasks"][task_id]["status"] = "waiting_for_retry"
         state["tasks"][task_id]["note"] = "Recovered from interrupted run."
+    # Unblock parents stuck in waiting_for_dependency whose repair dep is quarantined/blocked.
+    # This happens cross-run when a repair task failed terminally in a previous batch.
+    for task_id, task_state in list(state.get("tasks", {}).items()):
+        if task_state.get("status") != "waiting_for_dependency":
+            continue
+        for dep_id in task_state.get("runtime_depends_on", []):
+            dep_state = state.get("tasks", {}).get(dep_id, {})
+            if dep_state.get("status") not in {"quarantined", "blocked", "abandoned"}:
+                continue
+            dep_row = get_task_runtime(config["state_db_path"], dep_id)
+            if dep_row is None:
+                continue
+            try:
+                payload = json.loads(str(dep_row["payload_json"])) if dep_row["payload_json"] else {}
+            except Exception:
+                payload = {}
+            set_task_runtime(
+                config["state_db_path"],
+                task_id=dep_id,
+                title=str(dep_row["title"]),
+                priority=int(dep_row["priority"]),
+                status="ready",
+                payload=payload,
+            )
+            state["tasks"][dep_id] = {**dep_state, "status": "ready"}
     cleanup_names = set(recovered.get("run_tick_ids", []))
     _cleanup_worktrees(
         config["project_root"],
@@ -614,7 +989,10 @@ def run_one_task(
     outcome = "running"
 
     prev = state.get("tasks", {}).get(task_id, {})
-    attempt_count = int(prev.get("attempt_count", 0)) + (0 if config["dry_run"] else 1)
+    prev_attempt_count = int(prev.get("attempt_count", 0))
+    # Quota exhaustion never counts against attempt limits — it is an external constraint,
+    # not a development failure. Other failures increment the counter.
+    attempt_count = prev_attempt_count + (0 if config["dry_run"] else 1)
     protected_paths = list(task.get("protected_paths") or []) + list(config.get("protected_paths", []))
     allow_no_changes = bool(task.get("allow_no_changes", False))
     report_only = bool(task.get("report_only", False))
@@ -714,19 +1092,51 @@ def run_one_task(
                 config["test_timeout_minutes"], prefix="setup-tests",
             )
             if not setup_ok:
-                failed_commands = [item["command"] for item in setup_results if not item.get("passed")]
+                failure_summary = _summarize_test_failures(report_dir, "setup-tests", setup_results)
+                repair_task_id, repair_kind = _queue_repair_task(
+                    config,
+                    task,
+                    task_id=task_id,
+                    failure_summary=failure_summary,
+                    parent_run_id=run_id,
+                )
                 outcome = "baseline_failed"
+                task_status = "baseline_failed"
+                note = f"Setup commands failed: {failure_summary['note']}"
+                extra = {
+                    "attempt_count": attempt_count,
+                    "baseline_failure_signature": failure_summary["signature"],
+                    "baseline_failure_identifiers": failure_summary["identifiers"],
+                    "baseline_failure_commands": failure_summary["commands"],
+                    "baseline_failure_excerpts": failure_summary["excerpts"],
+                }
+                if repair_task_id:
+                    task_status = "waiting_for_dependency"
+                    note = f"{note}. Queued {repair_kind} repair task {repair_task_id}."
+                    extra["repair_task_id"] = repair_task_id
+                    extra["repair_task_kind"] = repair_kind
+                    extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
+                    # Sync in-memory state so select_task sees the reset repair task this tick.
+                    if state.get("tasks", {}).get(repair_task_id, {}).get("status") in {"quarantined", "blocked", "abandoned"}:
+                        state.setdefault("tasks", {})[repair_task_id] = {
+                            **state["tasks"].get(repair_task_id, {}),
+                            "status": "ready",
+                        }
+                elif config.get("auto_quarantine_failures", True):
+                    task_status = "quarantined"
                 _update_runtime_state(
                     config,
                     state,
                     task,
                     task_id=task_id,
                     run_id=run_id,
-                    status="baseline_failed",
+                    status=task_status,
+                    task_status=task_status,
+                    attempt_status="baseline_failed",
                     branch=branch,
                     report_dir=report_dir,
-                    note=f"Setup commands failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
-                    extra={"attempt_count": attempt_count},
+                    note=note,
+                    extra=extra,
                     work_order_id=work_order_id,
                     work_order_status="cancelled",
                 )
@@ -734,9 +1144,12 @@ def run_one_task(
                     report_dir / "run.json",
                     {
                         "run_id": run_id,
-                        "status": "baseline_failed",
+                        "status": task_status,
                         "work_order_id": work_order_id,
                         "setup_tests": setup_results,
+                        "failure_summary": failure_summary,
+                        "repair_task_id": repair_task_id,
+                        "repair_task_kind": repair_kind,
                     },
                 )
                 return 1
@@ -747,25 +1160,65 @@ def run_one_task(
             config["test_timeout_minutes"], prefix="baseline-tests",
         )
         if not baseline_ok:
-            failed_commands = [item["command"] for item in baseline_results if not item.get("passed")]
+            failure_summary = _summarize_test_failures(report_dir, "baseline-tests", baseline_results)
+            repair_task_id, repair_kind = _queue_repair_task(
+                config,
+                task,
+                task_id=task_id,
+                failure_summary=failure_summary,
+                parent_run_id=run_id,
+            )
             outcome = "baseline_failed"
+            task_status = "baseline_failed"
+            note = f"Baseline tests failed: {failure_summary['note']}"
+            extra = {
+                "attempt_count": attempt_count,
+                "baseline_failure_signature": failure_summary["signature"],
+                "baseline_failure_identifiers": failure_summary["identifiers"],
+                "baseline_failure_commands": failure_summary["commands"],
+                "baseline_failure_excerpts": failure_summary["excerpts"],
+            }
+            if repair_task_id:
+                task_status = "waiting_for_dependency"
+                note = f"{note}. Queued {repair_kind} repair task {repair_task_id}."
+                extra["repair_task_id"] = repair_task_id
+                extra["repair_task_kind"] = repair_kind
+                extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
+                # Sync in-memory state so select_task sees the reset repair task this tick.
+                if state.get("tasks", {}).get(repair_task_id, {}).get("status") in {"quarantined", "blocked", "abandoned"}:
+                    state.setdefault("tasks", {})[repair_task_id] = {
+                        **state["tasks"].get(repair_task_id, {}),
+                        "status": "ready",
+                    }
+            elif config.get("auto_quarantine_failures", True):
+                task_status = "quarantined"
             _update_runtime_state(
                 config,
                 state,
                 task,
                 task_id=task_id,
                 run_id=run_id,
-                status="baseline_failed",
+                status=task_status,
+                task_status=task_status,
+                attempt_status="baseline_failed",
                 branch=branch,
                 report_dir=report_dir,
-                note=f"Baseline tests failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
-                extra={"attempt_count": attempt_count},
+                note=note,
+                extra=extra,
                 work_order_id=work_order_id,
                 work_order_status="cancelled",
             )
             _save_json(
                 report_dir / "run.json",
-                {"run_id": run_id, "status": "baseline_failed", "work_order_id": work_order_id, "baseline_tests": baseline_results},
+                {
+                    "run_id": run_id,
+                    "status": task_status,
+                    "work_order_id": work_order_id,
+                    "baseline_tests": baseline_results,
+                    "failure_summary": failure_summary,
+                    "repair_task_id": repair_task_id,
+                    "repair_task_kind": repair_kind,
+                },
             )
             return 1
         _reset_tracked_changes(worktree)
@@ -800,14 +1253,37 @@ def run_one_task(
             )
         else:
             worker_adapter = build_worker_adapter(provider)
-            worker_result = worker_adapter.run(
-                prompt=prompt,
-                worktree=worktree,
-                report_dir=report_dir,
-                model=task.get("worker_model") or config.get(f"{provider}_model"),
-                max_budget_usd=task.get("worker_budget_usd"),
-                timeout_minutes=config["agent_timeout_minutes"],
+
+            # Heartbeat thread: keeps the lease alive for long-running workers by
+            # updating heartbeat_at every N seconds so expire_stale_leases does not
+            # kill the lease before the worker is done.
+            _heartbeat_stop = threading.Event()
+            def _heartbeat_loop(stop_event: threading.Event, db_path: object, tid: str) -> None:
+                interval = int(config.get("lease_heartbeat_interval_seconds", 30))
+                while not stop_event.wait(interval):
+                    if db_path and lease_acquired:
+                        try:
+                            update_lease_heartbeat(db_path, resource_type="task", resource_id=tid)
+                        except Exception:
+                            pass
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                args=(_heartbeat_stop, config.get("state_db_path"), task_id),
+                daemon=True,
             )
+            _heartbeat_thread.start()
+            try:
+                worker_result = worker_adapter.run(
+                    prompt=prompt,
+                    worktree=worktree,
+                    report_dir=report_dir,
+                    model=task.get("worker_model") or config.get(f"{provider}_model"),
+                    max_budget_usd=task.get("worker_budget_usd"),
+                    timeout_minutes=config["agent_timeout_minutes"],
+                )
+            finally:
+                _heartbeat_stop.set()
+
             tokens = worker_result.token_usage
             if tokens:
                 router.record(provider, tokens)
@@ -828,7 +1304,7 @@ def run_one_task(
                     branch=branch,
                     report_dir=report_dir,
                     note=f"Quota exhausted on {provider}. Retry after {retry_after}.",
-                    extra={"attempt_count": attempt_count, "retry_after": retry_after, "provider": provider},
+                    extra={"attempt_count": prev_attempt_count, "retry_after": retry_after, "provider": provider},
                     worker_name=provider,
                     work_order_id=work_order_id,
                     work_order_status="quota_delayed",
@@ -838,30 +1314,6 @@ def run_one_task(
                     {"run_id": run_id, "status": "waiting_for_quota", "work_order_id": work_order_id, "retry_after": retry_after},
                 )
                 return 1
-
-        agent_report_path = worktree / "AGENT_REPORT.json"
-        agent_report = _load_json(agent_report_path, {})
-        if not agent_report_path.exists() or not isinstance(agent_report, dict):
-            outcome = "waiting_for_retry"
-            _update_runtime_state(
-                config,
-                state,
-                task,
-                task_id=task_id,
-                run_id=run_id,
-                status="waiting_for_retry",
-                task_status="waiting_for_retry",
-                attempt_status="agent_report_missing",
-                branch=branch,
-                report_dir=report_dir,
-                note="Worker did not leave a valid AGENT_REPORT.json.",
-                extra={"attempt_count": attempt_count, "retry_after": _now()},
-                worker_name=provider,
-                work_order_id=work_order_id,
-                work_order_status="retry_pending",
-            )
-            return 1
-        _save_json(report_dir / "AGENT_REPORT.json", agent_report)
 
         changed = _changed_files(worktree)
         _save_json(report_dir / "changed-files.json", {"files": changed})
@@ -888,6 +1340,22 @@ def run_one_task(
                 work_order_status="retry_pending",
             )
             return 1
+
+        agent_report_path = worktree / "AGENT_REPORT.json"
+        agent_report = _load_json(agent_report_path, {})
+        if not agent_report_path.exists() or not isinstance(agent_report, dict):
+            # Worker returned 0 — synthesize a partial report rather than failing.
+            # This handles agents that succeed but forget to write AGENT_REPORT.json.
+            agent_report = {
+                "status": "partial",
+                "summary": "Worker completed without writing AGENT_REPORT.json",
+                "completed": [f"Changed {len(changed)} file(s)"] if changed else [],
+                "issues": ["AGENT_REPORT.json was not written by the worker"],
+                "next": "Review changed files for correctness",
+            }
+            _save_json(agent_report_path, agent_report)
+        _save_json(report_dir / "AGENT_REPORT.json", agent_report)
+
 
         if not changed and not allow_no_changes:
             outcome = "waiting_for_retry"
@@ -1108,6 +1576,44 @@ def run_one_task(
                     )
                     return 1
 
+                # Create a GitHub PR after a successful push.
+                pr_url: str | None = None
+                if config.get("auto_pr") and shutil.which("gh"):
+                    base_branch = str(config.get("base_branch", "main"))
+                    pr_title = f"chore(ai): {task.get('title', task_id)} [auto-coder]"
+                    pr_body = "\n".join([
+                        f"Auto-generated by auto-coder for task `{task_id}`.",
+                        "",
+                        f"**Work order:** `{work_order_id}`",
+                        f"**Worker:** `{provider}`",
+                        "",
+                        "## Changes",
+                        "\n".join(f"- `{f}`" for f in changed_for_commit),
+                    ])
+                    pr_r = subprocess.run(
+                        ["gh", "pr", "create",
+                         "--title", pr_title,
+                         "--body", pr_body,
+                         "--base", base_branch,
+                         "--head", branch],
+                        cwd=str(worktree),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if pr_r.returncode == 0:
+                        pr_url = pr_r.stdout.strip()
+                        _save_json(report_dir / "pr.json", {"url": pr_url, "branch": branch})
+                        # Auto-merge if configured.
+                        if config.get("auto_merge") and pr_url:
+                            subprocess.run(
+                                ["gh", "pr", "merge", "--squash", "--auto", pr_url],
+                                cwd=str(worktree),
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                            )
+
         outcome = "completed"
         _update_runtime_state(
             config,
@@ -1162,12 +1668,26 @@ def run_one_task(
             _remove_worktree_impl(project_root, worktree)
         if config.get("state_db_path") and lease_acquired:
             release_lease(config["state_db_path"], resource_type="task", resource_id=task_id)
+        # Always update PROGRESS.md in the project root so GitHub shows current state.
+        try:
+            if config.get("tasks_path") and config.get("state_db_path"):
+                write_project_progress(
+                    project_root,
+                    tasks_path=config["tasks_path"],
+                    state_db_path=config["state_db_path"],
+                )
+        except Exception:
+            pass
 
 
 def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
+    loop_mode = config.get("_loop_mode", False)
+    max_ticks = int(config.get("_max_ticks", 100))
     exit_code = 0
     with _file_lock(config["lock_path"]):
         _recover_runtime(config, state)
+        if loop_mode:
+            return _run_loop(config, tasks, state, max_ticks=max_ticks)
         max_tasks = max(1, int(config.get("max_tasks_per_run", 1)))
         processed = 0
         attempted_ids: set[str] = set()
@@ -1181,6 +1701,78 @@ def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
             task_exit = run_one_task(config, task, state)
             if task_exit != 0:
                 exit_code = task_exit
+            if config.get("state_db_path"):
+                fresh = list_task_specs(config["state_db_path"])
+                existing_ids = {str(t.get("id")) for t in tasks}
+                for spec in fresh:
+                    if str(spec.get("id")) not in existing_ids:
+                        tasks.append(spec)
+                state.update(export_state(config["state_db_path"]))
+    return exit_code
+
+
+def _run_loop(config: dict[str, Any], tasks: list[dict], state: dict, *, max_ticks: int) -> int:
+    """Run ticks continuously until all tasks are done, blocked, or max_ticks reached.
+
+    Each tick selects one task, executes it, and refreshes state from SQLite so
+    dynamically created repair tasks are picked up immediately.
+    """
+    exit_code = 0
+    tick = 0
+
+    while tick < max_ticks:
+        # Refresh task list and state from DB to pick up auto-generated repair tasks.
+        if config.get("state_db_path"):
+            fresh = list_task_specs(config["state_db_path"])
+            existing_ids = {str(t.get("id")) for t in tasks}
+            for spec in fresh:
+                if str(spec.get("id")) not in existing_ids:
+                    tasks.append(spec)
+            db_state = export_state(config["state_db_path"])
+            state.update(db_state)
+
+        task = select_task(tasks, state)
+        if not task:
+            task_states = state.get("tasks", {})
+            completed = sum(1 for t in task_states.values() if t.get("status") == "completed")
+            terminal = sum(1 for t in task_states.values() if t.get("status") in {"completed", "blocked", "quarantined", "abandoned"})
+            waiting = sum(1 for t in task_states.values() if t.get("status") in {"waiting_for_quota", "waiting_for_retry"})
+            total = len(tasks)
+            if waiting and terminal < total:
+                print(
+                    f"[loop] No tasks ready right now — {waiting} task(s) waiting for quota/retry. "
+                    f"{completed}/{total} completed. Stopping; re-run after cooldown."
+                )
+            else:
+                print(f"[loop] All tasks done. {completed}/{total} completed, {terminal - completed} in terminal error.")
+            break
+
+        tick += 1
+        task_id = str(task.get("id", ""))
+        print(f"[loop tick={tick}/{max_ticks}] {task_id}")
+
+        task_exit = run_one_task(config, task, state)
+        if task_exit != 0:
+            exit_code = task_exit
+
+        # Sync state after each tick so the next select_task sees fresh status.
+        if config.get("state_db_path"):
+            state.update(export_state(config["state_db_path"]))
+
+    if tick >= max_ticks:
+        print(f"[loop] Reached max_ticks={max_ticks} — stopping.")
+
+    # Write final PROGRESS.md snapshot.
+    try:
+        if config.get("tasks_path") and config.get("state_db_path"):
+            write_project_progress(
+                config["project_root"],
+                tasks_path=config["tasks_path"],
+                state_db_path=config["state_db_path"],
+            )
+    except Exception:
+        pass
+
     return exit_code
 
 

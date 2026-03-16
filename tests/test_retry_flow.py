@@ -12,7 +12,13 @@ from unittest.mock import patch
 from auto_coder.config import AUTO_CODER_DIR, load_config
 from auto_coder.managers.base import ReviewDecision
 from auto_coder.orchestrator import run_one_task
-from auto_coder.storage import ensure_database, get_task_runtime, latest_work_order_for_task, list_attempts_for_task
+from auto_coder.storage import (
+    ensure_database,
+    get_task_runtime,
+    latest_work_order_for_task,
+    list_attempts_for_task,
+    list_task_specs,
+)
 
 
 class _FakeManagerBackend:
@@ -185,6 +191,276 @@ class TestRetryFlow(unittest.TestCase):
             task_row = get_task_runtime(config["state_db_path"], "task-setup")
             self.assertIsNotNone(task_row)
             self.assertEqual(task_row["status"], "completed")
+
+    def test_baseline_failure_creates_repair_task_and_quarantines_parent_into_dependency_wait(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "task-baseline-red",
+                "title": "Broken baseline task",
+                "prompt": "Implement feature after baseline passes.",
+                "allowed_paths": ["src/"],
+                "baseline_commands": [
+                    "python3 -c \"print('PrimitivesCommandTest::testBrokenCase'); raise SystemExit(1)\""
+                ],
+                "completion_commands": ["python3 -c 'print(1)'"],
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 1)
+            task_row = get_task_runtime(config["state_db_path"], "task-baseline-red")
+            self.assertIsNotNone(task_row)
+            self.assertEqual(task_row["status"], "waiting_for_dependency")
+            task_payload = json.loads(task_row["payload_json"]) if task_row["payload_json"] else {}
+            self.assertIn("repair-baseline::task-baseline-red", task_payload["runtime_depends_on"])
+            repair_row = get_task_runtime(config["state_db_path"], "repair-baseline::task-baseline-red")
+            self.assertIsNotNone(repair_row)
+            self.assertEqual(repair_row["status"], "ready")
+            repair_payload = json.loads(repair_row["payload_json"]) if repair_row["payload_json"] else {}
+            self.assertEqual(repair_payload["repair_target_task_id"], "task-baseline-red")
+            runtime_specs = {task["id"]: task for task in list_task_specs(config["state_db_path"])}
+            self.assertIn("repair-baseline::task-baseline-red", runtime_specs)
+
+    def test_repair_task_baseline_failure_is_quarantined_without_recursive_repair_task(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "repair-baseline::task-red",
+                "title": "Repair baseline for task-red",
+                "prompt": "Repair only.",
+                "allowed_paths": ["src/"],
+                "baseline_commands": [
+                    "python3 -c \"print('RepairBaselineTest::testStillBroken'); raise SystemExit(1)\""
+                ],
+                "completion_commands": ["python3 -c 'print(1)'"],
+                "auto_generated": True,
+                "repair_kind": "baseline",
+                "repair_target_task_id": "task-red",
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 1)
+            task_row = get_task_runtime(config["state_db_path"], "repair-baseline::task-red")
+            self.assertIsNotNone(task_row)
+            self.assertEqual(task_row["status"], "quarantined")
+            self.assertIsNone(get_task_runtime(config["state_db_path"], "repair-baseline::repair-baseline::task-red"))
+
+    def test_environment_failure_creates_shared_environment_repair_task(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            task_one = {
+                "id": "task-env-1",
+                "title": "Task env one",
+                "prompt": "Use environment-sensitive baseline.",
+                "allowed_paths": ["src/"],
+                "baseline_commands": ["python -m compileall src"],
+                "completion_commands": ["python3 -c 'print(1)'"],
+            }
+            task_two = {
+                "id": "task-env-2",
+                "title": "Task env two",
+                "prompt": "Use same environment-sensitive baseline.",
+                "allowed_paths": ["src/"],
+                "runtime_depends_on": ["repair-baseline::stale-task-env-2"],
+                "baseline_commands": ["python -m compileall tests"],
+                "completion_commands": ["python3 -c 'print(1)'"],
+            }
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree):
+                exit_code_one = run_one_task(config, task_one, {"tasks": {}, "runs": []})
+                exit_code_two = run_one_task(config, task_two, {"tasks": {}, "runs": []})
+
+            self.assertEqual(exit_code_one, 1)
+            self.assertEqual(exit_code_two, 1)
+
+            shared_task_id = "repair-environment::missing-command-python"
+            shared_row = get_task_runtime(config["state_db_path"], shared_task_id)
+            self.assertIsNotNone(shared_row)
+            shared_payload = json.loads(shared_row["payload_json"]) if shared_row["payload_json"] else {}
+            self.assertEqual(shared_row["status"], "ready")
+            self.assertEqual(shared_payload["repair_kind"], "environment")
+
+            task_one_row = get_task_runtime(config["state_db_path"], "task-env-1")
+            task_two_row = get_task_runtime(config["state_db_path"], "task-env-2")
+            payload_one = json.loads(task_one_row["payload_json"]) if task_one_row and task_one_row["payload_json"] else {}
+            payload_two = json.loads(task_two_row["payload_json"]) if task_two_row and task_two_row["payload_json"] else {}
+            self.assertEqual(task_one_row["status"], "waiting_for_dependency")
+            self.assertEqual(task_two_row["status"], "waiting_for_dependency")
+            self.assertEqual(payload_one["runtime_depends_on"], [shared_task_id])
+            self.assertEqual(payload_two["runtime_depends_on"], [shared_task_id])
+            self.assertIsNone(get_task_runtime(config["state_db_path"], "repair-baseline::task-env-1"))
+            self.assertIsNone(get_task_runtime(config["state_db_path"], "repair-baseline::task-env-2"))
+
+    def test_environment_repair_task_failure_is_quarantined_without_recursive_environment_task(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "repair-environment::missing-command-python",
+                "title": "Repair environment: missing python command",
+                "prompt": "Repair shared environment issue.",
+                "allowed_paths": [".auto-coder/"],
+                "baseline_commands": ["python -m compileall src"],
+                "completion_commands": ["python -m compileall src"],
+                "auto_generated": True,
+                "repair_kind": "environment",
+                "repair_issue_slug": "missing-command-python",
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 1)
+            task_row = get_task_runtime(config["state_db_path"], "repair-environment::missing-command-python")
+            self.assertIsNotNone(task_row)
+            self.assertEqual(task_row["status"], "quarantined")
+            self.assertIsNone(get_task_runtime(config["state_db_path"], "repair-environment::missing-command-missing-command-python"))
+
+    def test_quarantined_repair_task_is_reset_to_ready_on_next_run_batch(self):
+        """Cross-run: if a repair task is quarantined, run_batch must reset it so parent can eventually run."""
+        from auto_coder.orchestrator import run_batch
+        from auto_coder.storage import set_task_runtime, ensure_database
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            config["max_tasks_per_run"] = 5
+
+            repair_id = "repair-environment::missing-command-python"
+            parent_id = "task-env-parent"
+
+            # Simulate end-of-previous-run state: repair was quarantined, parent is waiting.
+            repair_payload = {
+                "id": repair_id,
+                "title": "Repair environment",
+                "prompt": "fix env",
+                "allowed_paths": [".auto-coder/"],
+                "baseline_commands": [],
+                "completion_commands": [],
+                "auto_generated": True,
+                "repair_kind": "environment",
+                "repair_issue_slug": "missing-command-python",
+                "enabled": True,
+                "priority": 0,
+            }
+            parent_payload = {
+                "id": parent_id,
+                "title": "Parent task",
+                "prompt": "do work",
+                "allowed_paths": ["src/"],
+                "baseline_commands": [],
+                "completion_commands": [],
+                "enabled": True,
+                "priority": 10,
+                "status": "waiting_for_dependency",
+                "runtime_depends_on": [repair_id],
+                "repair_task_id": repair_id,
+            }
+            set_task_runtime(config["state_db_path"], task_id=repair_id, title="Repair environment",
+                             priority=0, status="quarantined", payload=repair_payload)
+            set_task_runtime(config["state_db_path"], task_id=parent_id, title="Parent task",
+                             priority=10, status="waiting_for_dependency", payload=parent_payload)
+
+            # Build state as the CLI would via export_state.
+            state = {
+                "tasks": {
+                    repair_id: {**repair_payload, "status": "quarantined"},
+                    parent_id: {**parent_payload, "status": "waiting_for_dependency"},
+                },
+                "runs": [],
+            }
+
+            calls = []
+
+            def fake_run(_config, task, _state):
+                calls.append(task["id"])
+                _state.setdefault("tasks", {})[task["id"]] = {"status": "completed"}
+                return 0
+
+            tasks = list_task_specs(config["state_db_path"])
+            with patch("auto_coder.orchestrator.run_one_task", side_effect=fake_run):
+                run_batch(config, tasks, state)
+
+            # Repair task must have been reset and run (or at least selected and attempted).
+            repair_row = get_task_runtime(config["state_db_path"], repair_id)
+            self.assertIsNotNone(repair_row)
+            # After run_batch the repair task should no longer be quarantined.
+            self.assertNotEqual(repair_row["status"], "quarantined")
+            # The repair task must have been selected and run.
+            self.assertIn(repair_id, calls)
+
+    def test_baseline_repair_task_has_empty_setup_commands(self):
+        """Repair tasks must not inherit parent setup_commands that may reproduce the triggering failure."""
+        import json as _json
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "task-with-setup",
+                "title": "Task with setup",
+                "prompt": "Implement feature.",
+                "allowed_paths": ["src/"],
+                "setup_commands": ["composer install"],
+                "baseline_commands": [
+                    "python3 -c \"raise SystemExit(1)\""
+                ],
+                "completion_commands": ["python3 -c 'print(1)'"],
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 1)
+            repair_row = get_task_runtime(config["state_db_path"], "repair-baseline::task-with-setup")
+            self.assertIsNotNone(repair_row)
+            repair_payload = _json.loads(repair_row["payload_json"]) if repair_row["payload_json"] else {}
+            self.assertEqual(repair_payload.get("setup_commands", []), [],
+                             "Baseline repair task must not inherit parent setup_commands")
 
 
 if __name__ == "__main__":

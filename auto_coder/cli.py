@@ -37,6 +37,7 @@ from auto_coder.storage import (
     list_run_ticks,
     list_tables,
     list_task_runtime,
+    list_task_specs,
     list_work_orders_for_task,
     sync_tasks,
 )
@@ -57,6 +58,16 @@ def _load_runtime_state(config: dict[str, Any]) -> dict[str, Any]:
         state = export_state(config["state_db_path"])
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return state
+
+
+
+def _load_task_specs(config: dict[str, Any], yaml_tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not config["state_db_path"].exists():
+        return list(yaml_tasks)
+    specs = list_task_specs(config["state_db_path"])
+    if specs:
+        return specs
+    return list(yaml_tasks)
 
 def _probe_manager_backend(config: dict[str, Any]) -> str:
     backend = str(config.get("manager_backend", "anthropic")).strip().lower()
@@ -290,19 +301,33 @@ def cmd_status(args: argparse.Namespace) -> int:
         raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
         tasks = raw.get("tasks", [])
 
+    # Progress summary
+    from auto_coder.storage import count_tasks_by_status
+    status_counts = count_tasks_by_status(state_db_path) if state_db_path.exists() else {}
+    total = sum(status_counts.values())
+    completed = status_counts.get("completed", 0)
+    failed = status_counts.get("failed", 0) + status_counts.get("quarantined", 0)
+    remaining = total - completed - failed
+
+    print(f"Progress: {completed}/{total} completed ({failed} failed, {remaining} remaining)")
+    print("-" * 85)
+
+
     state = _load_runtime_state(config)
 
     task_state = state.get("tasks", {})
-    print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'UPDATED'}")
+    print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'LAST RUN'}")
     print("-" * 85)
-    db_rows = list_task_runtime(state_db_path) if state_db_path.exists() else []
+    from auto_coder.storage import list_task_runtime_with_attempts
+    db_rows = list_task_runtime_with_attempts(state_db_path) if state_db_path.exists() else []
     if db_rows:
         for row in db_rows:
             payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
             attempts = payload.get("attempt_count", 0)
-            updated = (row["updated_at"] or "")[:16]
+            # Use last_attempt_at if available, otherwise fall back to task.updated_at
+            last_run = (row.get("last_attempt_at") or row.get("updated_at") or "")[:16]
             enabled = "" if payload.get("enabled", True) else " [disabled]"
-            print(f"{str(row['id']) + enabled:<35} {str(row['status']):<18} {str(attempts):<10} {updated}")
+            print(f"{str(row['id']) + enabled:<35} {str(row['status']):<18} {str(attempts):<10} {last_run}")
     else:
         for task in sorted(tasks, key=lambda t: int(t.get("priority", 100))):
             tid = task.get("id", "?")
@@ -353,6 +378,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         config["dry_run"] = True
     if args.task:
         config["_requested_task"] = args.task
+    if getattr(args, "loop", False):
+        config["_loop_mode"] = True
+        config["_max_ticks"] = getattr(args, "max_ticks", 100)
 
     if not config.get("enabled", True):
         print("auto-coder is disabled in config.yaml")
@@ -377,11 +405,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
-    tasks = list(raw.get("tasks", []))
-    if not tasks:
+    yaml_tasks = list(raw.get("tasks", []))
+    if not yaml_tasks:
         print("tasks.yaml has no tasks.")
         return 0
-    sync_tasks(config["state_db_path"], tasks)
+    sync_tasks(config["state_db_path"], yaml_tasks)
+    tasks = _load_task_specs(config, yaml_tasks)
 
     state = _load_runtime_state(config)
 
@@ -756,6 +785,10 @@ def main() -> None:
     p_run.add_argument("--live", action="store_true", help="Execute agents (overrides dry_run)")
     p_run.add_argument("--dry-run", action="store_true", dest="dry_run",
                        help="Force dry run (overrides config)")
+    p_run.add_argument("--loop", action="store_true",
+                       help="Keep running ticks until all tasks complete or --max-ticks is reached")
+    p_run.add_argument("--max-ticks", type=int, default=100, dest="max_ticks",
+                       help="Maximum number of ticks in --loop mode (default: 100)")
 
     p_migrate = sub.add_parser("migrate", help="Import a legacy tasks.yaml into tasks.local.yaml")
     p_migrate.add_argument("source", help="Path to legacy YAML file with top-level tasks:")
