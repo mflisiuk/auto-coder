@@ -1,5 +1,14 @@
 # Changelog
 
+## [2026-03-16] - CC-Manager Bridge Integration
+### Co się zmieniło
+- Dodano mostek `cc-manager` integrujący Claude Code jako backend menedżera
+- Zaimplementowano obsługę Claude Code w roli managera do generowania i zarządzania zadaniami
+- Rozszerzono dostępne opcje workerów o `cc` (Claude Code) jako domyślny i `cch` (Claude Code paid) jako fallback
+
+### Poprawki błędów
+- Naprawiono zawieszanie się procesu przez zamknięcie stdin w moście cc-manager
+
 ## [2026-03-16] - Autonomous execution hardening and setup orchestration
 ### Co się zmieniło
 - Dodano w pełni autonomiczne wykonanie zadań z izolowanymi workerami w git worktrees
