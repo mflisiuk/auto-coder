@@ -81,6 +81,8 @@ ${JSON.stringify(schema, null, 2)}`;
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
+  // Close stdin since we're using -p mode (prompt from CLI, not from stdin)
+  child.stdin.end();
 
   const exitCode = await new Promise((resolve, reject) => {
     child.on("error", reject);
