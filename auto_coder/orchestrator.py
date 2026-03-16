@@ -28,6 +28,7 @@ from auto_coder.storage import (
     latest_work_order_for_task,
     list_attempts_for_task,
     list_work_orders_for_task,
+    list_task_specs,
     record_attempt,
     recover_interrupted_runs,
     release_lease,
@@ -388,6 +389,21 @@ def _queue_environment_repair_task(
     repair_task_id = _environment_repair_task_id(str(env_issue["issue_slug"]))
     existing = get_task_runtime(config["state_db_path"], repair_task_id)
     if existing is not None:
+        status = str(existing["status"])
+        if status not in {"quarantined", "blocked", "abandoned"}:
+            return repair_task_id
+        try:
+            payload = json.loads(str(existing["payload_json"])) if existing["payload_json"] else {}
+        except Exception:
+            payload = {}
+        set_task_runtime(
+            config["state_db_path"],
+            task_id=repair_task_id,
+            title=str(existing["title"]),
+            priority=int(existing.get("priority", 0)),
+            status="ready",
+            payload=payload,
+        )
         return repair_task_id
 
     repair_task = {
@@ -399,7 +415,7 @@ def _queue_environment_repair_task(
         "depends_on": [],
         "allowed_paths": _environment_allowed_paths(task),
         "protected_paths": list(task.get("protected_paths", [])),
-        "setup_commands": list(task.get("setup_commands", [])),
+        "setup_commands": [],
         "baseline_commands": list(failure_summary.get("commands", [])),
         "completion_commands": list(failure_summary.get("commands", [])),
         "acceptance_criteria": [
@@ -465,7 +481,7 @@ def _queue_baseline_repair_task(
         "depends_on": base_dependencies,
         "allowed_paths": list(task.get("allowed_paths", [])),
         "protected_paths": list(task.get("protected_paths", [])),
-        "setup_commands": list(task.get("setup_commands", [])),
+        "setup_commands": [],
         "baseline_commands": list(_baseline_commands(task)),
         "completion_commands": list(_baseline_commands(task)),
         "acceptance_criteria": [
@@ -803,6 +819,31 @@ def _recover_runtime(config: dict[str, Any], state: dict[str, Any]) -> dict[str,
         state.setdefault("tasks", {}).setdefault(task_id, {})
         state["tasks"][task_id]["status"] = "waiting_for_retry"
         state["tasks"][task_id]["note"] = "Recovered from interrupted run."
+    # Unblock parents stuck in waiting_for_dependency whose repair dep is quarantined/blocked.
+    # This happens cross-run when a repair task failed terminally in a previous batch.
+    for task_id, task_state in list(state.get("tasks", {}).items()):
+        if task_state.get("status") != "waiting_for_dependency":
+            continue
+        for dep_id in task_state.get("runtime_depends_on", []):
+            dep_state = state.get("tasks", {}).get(dep_id, {})
+            if dep_state.get("status") not in {"quarantined", "blocked", "abandoned"}:
+                continue
+            dep_row = get_task_runtime(config["state_db_path"], dep_id)
+            if dep_row is None:
+                continue
+            try:
+                payload = json.loads(str(dep_row["payload_json"])) if dep_row["payload_json"] else {}
+            except Exception:
+                payload = {}
+            set_task_runtime(
+                config["state_db_path"],
+                task_id=dep_id,
+                title=str(dep_row["title"]),
+                priority=int(dep_row["priority"]),
+                status="ready",
+                payload=payload,
+            )
+            state["tasks"][dep_id] = {**dep_state, "status": "ready"}
     cleanup_names = set(recovered.get("run_tick_ids", []))
     _cleanup_worktrees(
         config["project_root"],
@@ -1030,6 +1071,12 @@ def run_one_task(
                     extra["repair_task_id"] = repair_task_id
                     extra["repair_task_kind"] = repair_kind
                     extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
+                    # Sync in-memory state so select_task sees the reset repair task this tick.
+                    if state.get("tasks", {}).get(repair_task_id, {}).get("status") in {"quarantined", "blocked", "abandoned"}:
+                        state.setdefault("tasks", {})[repair_task_id] = {
+                            **state["tasks"].get(repair_task_id, {}),
+                            "status": "ready",
+                        }
                 elif config.get("auto_quarantine_failures", True):
                     task_status = "quarantined"
                 _update_runtime_state(
@@ -1092,6 +1139,12 @@ def run_one_task(
                 extra["repair_task_id"] = repair_task_id
                 extra["repair_task_kind"] = repair_kind
                 extra["runtime_depends_on"] = _updated_runtime_dependencies(task, repair_task_id, repair_kind)
+                # Sync in-memory state so select_task sees the reset repair task this tick.
+                if state.get("tasks", {}).get(repair_task_id, {}).get("status") in {"quarantined", "blocked", "abandoned"}:
+                    state.setdefault("tasks", {})[repair_task_id] = {
+                        **state["tasks"].get(repair_task_id, {}),
+                        "status": "ready",
+                    }
             elif config.get("auto_quarantine_failures", True):
                 task_status = "quarantined"
             _update_runtime_state(
@@ -1536,6 +1589,13 @@ def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
             task_exit = run_one_task(config, task, state)
             if task_exit != 0:
                 exit_code = task_exit
+            if config.get("state_db_path"):
+                fresh = list_task_specs(config["state_db_path"])
+                existing_ids = {str(task.get("id")) for task in tasks}
+                for spec in fresh:
+                    task_id = str(spec.get("id"))
+                    if task_id not in existing_ids:
+                        tasks.append(spec)
     return exit_code
 
 
