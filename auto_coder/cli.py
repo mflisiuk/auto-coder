@@ -30,6 +30,7 @@ from auto_coder.operator import (
 )
 from auto_coder.storage import (
     ensure_database,
+    export_state,
     force_task_retry,
     get_task_runtime,
     list_attempts_for_task,
@@ -43,6 +44,19 @@ from auto_coder.brief_validator import validate_project_brief
 
 
 # ═══════════════════════════════════════════════════════════════════════ commands
+
+def _load_runtime_state(config: dict[str, Any]) -> dict[str, Any]:
+    state: dict[str, Any] = {"tasks": {}, "runs": []}
+    state_path = config["state_path"]
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            state = {"tasks": {}, "runs": []}
+    if config["state_db_path"].exists():
+        state = export_state(config["state_db_path"])
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return state
 
 def _probe_manager_backend(config: dict[str, Any]) -> str:
     backend = str(config.get("manager_backend", "anthropic")).strip().lower()
@@ -276,12 +290,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
         tasks = raw.get("tasks", [])
 
-    state = {}
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    state = _load_runtime_state(config)
 
     task_state = state.get("tasks", {})
     print(f"{'ID':<35} {'STATUS':<18} {'ATTEMPTS':<10} {'UPDATED'}")
@@ -374,13 +383,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
     sync_tasks(config["state_db_path"], tasks)
 
-    state_path = config["state_path"]
-    state: dict[str, Any] = {}
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    state = _load_runtime_state(config)
 
     # filter to requested task if given
     requested = config.get("_requested_task")
@@ -535,6 +538,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
     if not ok:
         print(f"FAIL: task not found: {args.task_id}")
         return 1
+    if config["state_db_path"].exists():
+        config["state_path"].write_text(
+            json.dumps(export_state(config["state_db_path"]), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(f"Queued forced retry for {args.task_id}")
     return 0
 

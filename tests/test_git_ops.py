@@ -7,10 +7,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from auto_coder.git_ops import cleanup_worktrees, resolve_worktree_base_ref
+from auto_coder.git_ops import changed_files, cleanup_worktrees, resolve_worktree_base_ref
 
 
 class TestGitOps(unittest.TestCase):
+    def test_changed_files_ignores_agent_report_runtime_artifact(self):
+        fake_status = subprocess.CompletedProcess(
+            args=["git", "status", "--porcelain"],
+            returncode=0,
+            stdout="?? AGENT_REPORT.json\n M src/app.py\n",
+            stderr="",
+        )
+        with patch("auto_coder.git_ops.git", return_value=fake_status):
+            files = changed_files(Path("/tmp/repo"))
+        self.assertEqual(files, ["src/app.py"])
+
     def test_cleanup_worktrees_removes_requested_names(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

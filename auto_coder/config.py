@@ -87,6 +87,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "codex_reasoning_effort": "medium",
         "default_worker": "cc",
         "fallback_worker": "cch",
+        "setup_commands": [],
         "allowed_paths": [],
         "protected_paths": [],
         "providers": {
@@ -188,6 +189,9 @@ codex_reasoning_effort: medium
 # Default worker CLI and fallback
 default_worker: cc
 fallback_worker: cch
+
+# Commands run in every fresh worktree before baseline/completion commands
+setup_commands: []
 
 # Paths policy (override per task in tasks.yaml)
 allowed_paths: []

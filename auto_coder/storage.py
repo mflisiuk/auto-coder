@@ -154,7 +154,17 @@ def sync_tasks(db_path: Path, tasks: list[dict]) -> None:
             task_id = str(task["id"])
             title = str(task.get("title", task_id))
             priority = int(task.get("priority", 100))
-            payload_json = json.dumps(task, ensure_ascii=False)
+            existing = conn.execute(
+                "SELECT payload_json FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            existing_payload: dict = {}
+            if existing and existing["payload_json"]:
+                try:
+                    existing_payload = json.loads(str(existing["payload_json"]))
+                except Exception:
+                    existing_payload = {}
+            payload_json = json.dumps({**existing_payload, **task}, ensure_ascii=False)
             conn.execute(
                 """
                 INSERT INTO tasks (id, title, priority, payload_json)
@@ -391,6 +401,10 @@ def force_task_retry(db_path: Path, task_id: str, *, note: str, retry_after: str
     if not db_path.exists():
         return False
     with connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ?",
+            ("task", task_id),
+        )
         row = conn.execute(
             "SELECT id, title, priority, payload_json FROM tasks WHERE id = ?",
             (task_id,),
@@ -437,6 +451,52 @@ def force_task_retry(db_path: Path, task_id: str, *, note: str, retry_after: str
             )
         conn.commit()
     return True
+
+
+def export_state(db_path: Path) -> dict:
+    """Build a lightweight state.json-compatible snapshot from SQLite."""
+    state: dict[str, object] = {"tasks": {}, "runs": []}
+    if not db_path.exists():
+        return state
+    with connect(db_path) as conn:
+        task_rows = conn.execute(
+            "SELECT id, status, payload_json, updated_at FROM tasks ORDER BY priority, id"
+        ).fetchall()
+        run_rows = conn.execute(
+            "SELECT id, status, payload_json, updated_at FROM run_ticks ORDER BY created_at, id"
+        ).fetchall()
+
+    tasks_payload: dict[str, dict] = {}
+    for row in task_rows:
+        try:
+            payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        tasks_payload[str(row["id"])] = {
+            **payload,
+            "status": str(row["status"]),
+            "updated_at": str(row["updated_at"] or payload.get("updated_at") or ""),
+        }
+    state["tasks"] = tasks_payload
+
+    runs_payload: list[dict] = []
+    for row in run_rows:
+        try:
+            payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        runs_payload.append(
+            {
+                "run_id": str(row["id"]),
+                "task_id": payload.get("task_id"),
+                "status": str(row["status"]),
+                "updated_at": str(row["updated_at"] or ""),
+                "note": payload.get("note", ""),
+                **payload,
+            }
+        )
+    state["runs"] = runs_payload
+    return state
 
 
 def acquire_lease(

@@ -29,10 +29,11 @@ class TestTaskSpec(unittest.TestCase):
         self.assertEqual(spec.max_attempts_total, 4)
 
     def test_to_mapping_round_trips_core_fields(self):
-        spec = TaskSpec(id="task-1", title="Task One", preferred_workers=["cch"])
+        spec = TaskSpec(id="task-1", title="Task One", preferred_workers=["cch"], setup_commands=["composer install"])
         payload = spec.to_mapping()
         self.assertEqual(payload["id"], "task-1")
         self.assertEqual(payload["preferred_workers"], ["cch"])
+        self.assertEqual(payload["setup_commands"], ["composer install"])
 
 
 class TestWorkOrderSpec(unittest.TestCase):

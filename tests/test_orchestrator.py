@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from auto_coder.orchestrator import (
+    _reset_tracked_changes,
     validate_changed_files,
     select_task,
     run_tests,
@@ -124,6 +125,29 @@ class TestRunTests(unittest.TestCase):
                       worktree, report_dir, timeout_minutes=1)
             self.assertIn("out", (report_dir / "tests" / "test-01.stdout.log").read_text())
             self.assertIn("err", (report_dir / "tests" / "test-01.stderr.log").read_text())
+
+
+class TestWorktreeReset(unittest.TestCase):
+    def test_reset_tracked_changes_preserves_untracked_files(self):
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            import subprocess
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True, text=True)
+
+            (repo / "tracked.txt").write_text("mutated\n", encoding="utf-8")
+            (repo / "untracked.txt").write_text("keep\n", encoding="utf-8")
+
+            _reset_tracked_changes(repo)
+
+            self.assertEqual((repo / "tracked.txt").read_text(encoding="utf-8"), "original\n")
+            self.assertEqual((repo / "untracked.txt").read_text(encoding="utf-8"), "keep\n")
 
 
 class TestRunBatch(unittest.TestCase):

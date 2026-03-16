@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,14 @@ def _build_cmd(
         return cmd
 
     if provider == "codex":
-        cmd = ["codex", "-a", "never", "-s", "workspace-write", "exec", "--ephemeral"]
+        cmd = [
+            "codex",
+            "-a", "never",
+            "-s", "workspace-write",
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+        ]
         if model:
             cmd += ["-m", model]
         return cmd
@@ -95,8 +103,19 @@ def extract_token_usage(stdout: str) -> int:
     return 0
 
 
-def is_quota_error(stderr: str, stdout: str) -> bool:
-    """Detect 429 / rate limit / quota exhaustion from agent output."""
-    text = (stderr + stdout).lower()
-    signals = ["429", "rate_limit", "ratelimit", "quota", "too many requests", "overloaded"]
-    return any(s in text for s in signals)
+def is_quota_error(stderr: str, stdout: str, *, returncode: int | None = None) -> bool:
+    """Detect genuine quota/rate-limit failures from agent output."""
+    if returncode == 0:
+        return False
+
+    text = f"{stderr}\n{stdout}".lower()
+    patterns = (
+        r"\b429\b",
+        r"rate[\s_-]?limit",
+        r"too many requests",
+        r"insufficient_quota",
+        r"billing_hard_limit",
+        r"quota(?:\s+has\s+been)?\s+(?:exceeded|exhausted|reached)",
+        r"\boverloaded\b",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)

@@ -11,15 +11,17 @@ Przepływ:
 3. utworzenie albo wznowienie work ordera
 4. wybór workera przez router
 5. utworzenie git worktree
-6. odpalenie `baseline_commands`
-7. uruchomienie workera CLI
-8. odczyt `AGENT_REPORT.json`
-9. policy checks na changed files
-10. odpalenie `completion_commands`
-11. deterministic review
-12. manager review
-13. commit / push jeśli włączone
-14. zapis attemptu, run ticku i artefaktów
+6. odpalenie `setup_commands` z configu i/lub taska
+7. odpalenie `baseline_commands`
+8. reset tracked files do `HEAD`, żeby baseline/setup side effects nie mieszały się z diffem workera
+9. uruchomienie workera CLI
+10. odczyt `AGENT_REPORT.json`
+11. policy checks na changed files
+12. odpalenie `completion_commands`
+13. deterministic review
+14. manager review
+15. commit / push jeśli włączone
+16. zapis attemptu, run ticku i artefaktów
 
 ## Obowiązkowy raport workera
 

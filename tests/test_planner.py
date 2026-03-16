@@ -188,6 +188,70 @@ tasks:
             self.assertEqual(tasks[0]["priority"], 5)
             self.assertFalse(tasks[0]["enabled"])
 
+    def test_generate_merges_allow_no_changes_override(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            config["tasks_local_path"].write_text(
+                """
+tasks:
+  - id: sprint1-auth
+    allow_no_changes: true
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            client = _mock_anthropic(SAMPLE_TASKS_YAML)
+            with patch("anthropic.Anthropic", return_value=client):
+                planner = Planner(config)
+                tasks = planner.generate()
+            self.assertTrue(tasks[0]["allow_no_changes"])
+
+    def test_generate_merges_report_only_override(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            config["tasks_local_path"].write_text(
+                """
+tasks:
+  - id: sprint1-auth
+    report_only: true
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            client = _mock_anthropic(SAMPLE_TASKS_YAML)
+            with patch("anthropic.Anthropic", return_value=client):
+                planner = Planner(config)
+                tasks = planner.generate()
+            self.assertTrue(tasks[0]["report_only"])
+
+    def test_generate_merges_setup_commands_override(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            config = _make_config(root)
+            config["tasks_local_path"].write_text(
+                """
+tasks:
+  - id: sprint1-auth
+    setup_commands:
+      - python3 -c 'print(1)'
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            client = _mock_anthropic(SAMPLE_TASKS_YAML)
+            with patch("anthropic.Anthropic", return_value=client):
+                planner = Planner(config)
+                tasks = planner.generate()
+            self.assertEqual(tasks[0]["setup_commands"], ["python3 -c 'print(1)'"])
+
     def test_generate_preserves_stable_ids_across_replans(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

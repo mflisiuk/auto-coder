@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 from auto_coder.executor import run_tests
 from auto_coder.policy import validate_changed_files
 from auto_coder.scheduler import select_task, should_retry
+from auto_coder.worker import _build_cmd, is_quota_error
 
 
 class TestPolicyModule(unittest.TestCase):
@@ -54,6 +55,22 @@ class TestExecutorModule(unittest.TestCase):
             self.assertTrue(passed)
             self.assertEqual(results[0]["returncode"], 0)
             self.assertTrue((reports / "tests.json").exists())
+
+
+class TestQuotaDetection(unittest.TestCase):
+    def test_ignores_report_schema_text_when_command_succeeds(self):
+        stdout = '{"status":"completed|partial|blocked|quota_exhausted"}'
+        self.assertFalse(is_quota_error("", stdout, returncode=0))
+
+    def test_detects_real_rate_limit_failures(self):
+        stderr = "Error: 429 Too Many Requests; insufficient_quota"
+        self.assertTrue(is_quota_error(stderr, "", returncode=1))
+
+
+class TestWorkerCommands(unittest.TestCase):
+    def test_codex_command_skips_git_repo_check(self):
+        command = _build_cmd("codex", model=None, max_budget_usd=None)
+        self.assertIn("--skip-git-repo-check", command)
 
 
 if __name__ == "__main__":

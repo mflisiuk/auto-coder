@@ -9,9 +9,11 @@ import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from auto_coder.managers.anthropic import AnthropicManagerBackend
+from auto_coder.managers.base import ReviewDecision
 from auto_coder.managers.codex_bridge import CodexManagerBridge
 from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.prompts.worker_instruction import build_worker_prompt
@@ -112,6 +114,15 @@ def _changed_files(repo: Path) -> list[str]:
             part = part.split(" -> ", 1)[1]
         files.append(part.strip())
     return sorted(set(files))
+
+
+def _reset_tracked_changes(repo: Path) -> None:
+    probe = _git(repo, "rev-parse", "--is-inside-work-tree")
+    if probe.returncode != 0:
+        return
+    result = _git(repo, "reset", "--hard", "HEAD")
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "git reset --hard HEAD failed")
 
 
 def _create_worktree(root: Path, worktree: Path, base_ref: str, branch: str) -> None:
@@ -408,8 +419,38 @@ def _baseline_commands(task: dict[str, Any]) -> list[str]:
     return list(task.get("baseline_commands", task.get("test_commands", [])))
 
 
+def _setup_commands(config: dict[str, Any], task: dict[str, Any]) -> list[str]:
+    commands: list[str] = []
+    seen: set[str] = set()
+    for source in (config.get("setup_commands", []), task.get("setup_commands", [])):
+        for item in source or []:
+            command = str(item).strip()
+            if not command or command in seen:
+                continue
+            seen.add(command)
+            commands.append(command)
+    return commands
+
+
 def _completion_commands(task: dict[str, Any], work_order: dict[str, Any]) -> list[str]:
     return list(work_order.get("completion_commands") or task.get("completion_commands", task.get("test_commands", [])))
+
+
+def _task_contract_signature(task: dict[str, Any]) -> str:
+    payload = {
+        "id": str(task.get("id", "")),
+        "title": str(task.get("title", "")),
+        "prompt": str(task.get("prompt", "")),
+        "allowed_paths": list(task.get("allowed_paths", [])),
+        "protected_paths": list(task.get("protected_paths", [])),
+        "setup_commands": list(task.get("setup_commands", [])),
+        "baseline_commands": list(task.get("baseline_commands", task.get("test_commands", []))),
+        "completion_commands": list(task.get("completion_commands", task.get("test_commands", []))),
+        "preferred_workers": list(task.get("preferred_workers", [])),
+        "allow_no_changes": bool(task.get("allow_no_changes", False)),
+        "report_only": bool(task.get("report_only", False)),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _load_history_for_task(config: dict[str, Any], task_id: str) -> list[dict[str, Any]]:
@@ -528,6 +569,7 @@ def _prepare_work_order(
             "created_by": "system",
         }
     )
+    work_order["task_contract_signature"] = _task_contract_signature(task)
     if config.get("state_db_path"):
         upsert_work_order(
             config["state_db_path"],
@@ -542,6 +584,8 @@ def _prepare_work_order(
 
 def _work_order_is_reusable(work_order: dict[str, Any], task: dict[str, Any]) -> bool:
     if str(work_order.get("task_id", "")) != str(task.get("id", "")):
+        return False
+    if str(work_order.get("task_contract_signature", "")) != _task_contract_signature(task):
         return False
     selected_worker = str(work_order.get("selected_worker", "")).strip()
     if selected_worker not in SUPPORTED_WORKERS:
@@ -572,6 +616,8 @@ def run_one_task(
     prev = state.get("tasks", {}).get(task_id, {})
     attempt_count = int(prev.get("attempt_count", 0)) + (0 if config["dry_run"] else 1)
     protected_paths = list(task.get("protected_paths") or []) + list(config.get("protected_paths", []))
+    allow_no_changes = bool(task.get("allow_no_changes", False))
+    report_only = bool(task.get("report_only", False))
     lease_acquired = False
     work_order: dict[str, Any] | None = None
     work_order_id: str | None = None
@@ -660,6 +706,41 @@ def run_one_task(
             )
             return 0
 
+        # ── setup ─────────────────────────────────────────────────────────────
+        setup_commands = _setup_commands(config, task)
+        if setup_commands:
+            setup_ok, setup_results = run_tests(
+                setup_commands, worktree, report_dir,
+                config["test_timeout_minutes"], prefix="setup-tests",
+            )
+            if not setup_ok:
+                failed_commands = [item["command"] for item in setup_results if not item.get("passed")]
+                outcome = "baseline_failed"
+                _update_runtime_state(
+                    config,
+                    state,
+                    task,
+                    task_id=task_id,
+                    run_id=run_id,
+                    status="baseline_failed",
+                    branch=branch,
+                    report_dir=report_dir,
+                    note=f"Setup commands failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
+                    extra={"attempt_count": attempt_count},
+                    work_order_id=work_order_id,
+                    work_order_status="cancelled",
+                )
+                _save_json(
+                    report_dir / "run.json",
+                    {
+                        "run_id": run_id,
+                        "status": "baseline_failed",
+                        "work_order_id": work_order_id,
+                        "setup_tests": setup_results,
+                    },
+                )
+                return 1
+
         # ── baseline ──────────────────────────────────────────────────────────
         baseline_ok, baseline_results = run_tests(
             _baseline_commands(task), worktree, report_dir,
@@ -687,49 +768,76 @@ def run_one_task(
                 {"run_id": run_id, "status": "baseline_failed", "work_order_id": work_order_id, "baseline_tests": baseline_results},
             )
             return 1
+        _reset_tracked_changes(worktree)
 
         # ── worker ────────────────────────────────────────────────────────────
         preferred = work_order.get("selected_worker") or task.get("preferred_provider") or config.get("default_worker", "cc")
-        provider = router.pick(preferred, estimated_tokens=task.get("estimated_tokens"))
-        worker_adapter = build_worker_adapter(provider)
-        worker_result = worker_adapter.run(
-            prompt=prompt,
-            worktree=worktree,
-            report_dir=report_dir,
-            model=task.get("worker_model") or config.get(f"{provider}_model"),
-            max_budget_usd=task.get("worker_budget_usd"),
-            timeout_minutes=config["agent_timeout_minutes"],
-        )
-        tokens = worker_result.token_usage
-        if tokens:
-            router.record(provider, tokens)
-
-        if worker_result.quota_exhausted:
-            outcome = "waiting_for_quota"
-            snapshot = router.mark_quota_exhausted(provider)
-            retry_after = snapshot.retry_after or _now()
-            _update_runtime_state(
-                config,
-                state,
-                task,
-                task_id=task_id,
-                run_id=run_id,
-                status="waiting_for_quota",
-                task_status="waiting_for_quota",
-                attempt_status="quota_exhausted",
-                branch=branch,
-                report_dir=report_dir,
-                note=f"Quota exhausted on {provider}. Retry after {retry_after}.",
-                extra={"attempt_count": attempt_count, "retry_after": retry_after, "provider": provider},
-                worker_name=provider,
-                work_order_id=work_order_id,
-                work_order_status="quota_delayed",
+        provider = "system" if report_only else router.pick(preferred, estimated_tokens=task.get("estimated_tokens"))
+        if report_only:
+            worker_result = SimpleNamespace(
+                worker_name="system",
+                command=["system:report-only"],
+                returncode=0,
+                stdout="",
+                stderr="",
+                token_usage=0,
+                quota_exhausted=False,
+                metadata={"report_only": True},
             )
             _save_json(
-                report_dir / "run.json",
-                {"run_id": run_id, "status": "waiting_for_quota", "work_order_id": work_order_id, "retry_after": retry_after},
+                worktree / "AGENT_REPORT.json",
+                {
+                    "status": "completed",
+                    "summary": "Report-only task completed from deterministic checks.",
+                    "completed": [
+                        "Ran baseline commands",
+                        "Skipped coding worker for report-only task",
+                        "Prepared deterministic AGENT_REPORT",
+                    ],
+                    "issues": [],
+                    "next": "Proceed to the next task.",
+                },
             )
-            return 1
+        else:
+            worker_adapter = build_worker_adapter(provider)
+            worker_result = worker_adapter.run(
+                prompt=prompt,
+                worktree=worktree,
+                report_dir=report_dir,
+                model=task.get("worker_model") or config.get(f"{provider}_model"),
+                max_budget_usd=task.get("worker_budget_usd"),
+                timeout_minutes=config["agent_timeout_minutes"],
+            )
+            tokens = worker_result.token_usage
+            if tokens:
+                router.record(provider, tokens)
+
+            if worker_result.quota_exhausted:
+                outcome = "waiting_for_quota"
+                snapshot = router.mark_quota_exhausted(provider)
+                retry_after = snapshot.retry_after or _now()
+                _update_runtime_state(
+                    config,
+                    state,
+                    task,
+                    task_id=task_id,
+                    run_id=run_id,
+                    status="waiting_for_quota",
+                    task_status="waiting_for_quota",
+                    attempt_status="quota_exhausted",
+                    branch=branch,
+                    report_dir=report_dir,
+                    note=f"Quota exhausted on {provider}. Retry after {retry_after}.",
+                    extra={"attempt_count": attempt_count, "retry_after": retry_after, "provider": provider},
+                    worker_name=provider,
+                    work_order_id=work_order_id,
+                    work_order_status="quota_delayed",
+                )
+                _save_json(
+                    report_dir / "run.json",
+                    {"run_id": run_id, "status": "waiting_for_quota", "work_order_id": work_order_id, "retry_after": retry_after},
+                )
+                return 1
 
         agent_report_path = worktree / "AGENT_REPORT.json"
         agent_report = _load_json(agent_report_path, {})
@@ -781,7 +889,7 @@ def run_one_task(
             )
             return 1
 
-        if not changed:
+        if not changed and not allow_no_changes:
             outcome = "waiting_for_retry"
             _update_runtime_state(
                 config,
@@ -858,14 +966,23 @@ def run_one_task(
             "completion_passed": tests_ok,
             "agent_report": agent_report,
         }
-        decision = review_attempt(
-            task=task,
-            work_order=work_order,
-            attempt_context=attempt_context,
-            history=history,
-            manager_backend=manager_backend,
-            report_dir=report_dir,
-        )
+        if not changed and allow_no_changes:
+            decision = ReviewDecision(
+                verdict="approve",
+                feedback="No source changes required for this task; completion commands passed.",
+                blockers=[],
+                next_work_order=None,
+                source="system:no_changes_allowed",
+            )
+        else:
+            decision = review_attempt(
+                task=task,
+                work_order=work_order,
+                attempt_context=attempt_context,
+                history=history,
+                manager_backend=manager_backend,
+                report_dir=report_dir,
+            )
         review = {
             "verdict": decision.verdict,
             "summary": decision.feedback,

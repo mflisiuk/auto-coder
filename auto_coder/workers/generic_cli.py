@@ -45,6 +45,6 @@ class GenericCliWorker(WorkerAdapter):
             stdout=result.stdout,
             stderr=result.stderr,
             token_usage=extract_token_usage(result.stdout),
-            quota_exhausted=is_quota_error(result.stderr, result.stdout),
+            quota_exhausted=is_quota_error(result.stderr, result.stdout, returncode=result.returncode),
             metadata={},
         )
