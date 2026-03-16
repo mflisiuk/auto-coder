@@ -123,6 +123,69 @@ class TestRetryFlow(unittest.TestCase):
             self.assertEqual(attempts[0]["status"], "started")
             self.assertEqual(attempts[-1]["status"], "review_failed")
 
+    def test_allow_no_changes_task_can_complete_without_source_diff(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "task-report",
+                "title": "Report task",
+                "prompt": "Verify baseline and report.",
+                "allowed_paths": ["src/"],
+                "baseline_commands": [],
+                "completion_commands": ["python3 -c 'print(1)'"],
+                "allow_no_changes": True,
+                "report_only": True,
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree), \
+                 patch("auto_coder.orchestrator._changed_files", return_value=[]):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 0)
+            task_row = get_task_runtime(config["state_db_path"], "task-report")
+            self.assertIsNotNone(task_row)
+            self.assertEqual(task_row["status"], "completed")
+
+    def test_setup_commands_run_before_baseline(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["auto_commit"] = False
+            config["manager_enabled"] = False
+            state: dict = {"tasks": {}, "runs": []}
+            task = {
+                "id": "task-setup",
+                "title": "Setup task",
+                "prompt": "Verify setup is executed.",
+                "allowed_paths": ["src/"],
+                "setup_commands": ["mkdir -p vendor/bin && printf '#!/bin/sh\\nexit 0\\n' > vendor/bin/phpunit && chmod +x vendor/bin/phpunit"],
+                "baseline_commands": ["./vendor/bin/phpunit"],
+                "completion_commands": ["python3 -c 'print(1)'"],
+                "allow_no_changes": True,
+                "report_only": True,
+            }
+
+            def fake_create_worktree(_root, worktree, _base_ref, _branch):
+                worktree.mkdir(parents=True, exist_ok=True)
+
+            with patch("auto_coder.orchestrator._resolve_worktree_base_ref", return_value="HEAD"), \
+                 patch("auto_coder.orchestrator._create_worktree", side_effect=fake_create_worktree), \
+                 patch("auto_coder.orchestrator._changed_files", return_value=[]):
+                exit_code = run_one_task(config, task, state)
+
+            self.assertEqual(exit_code, 0)
+            task_row = get_task_runtime(config["state_db_path"], "task-setup")
+            self.assertIsNotNone(task_row)
+            self.assertEqual(task_row["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

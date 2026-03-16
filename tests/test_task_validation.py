@@ -42,14 +42,20 @@ class TestTaskValidation(unittest.TestCase):
                         "title": "Task 1",
                         "depends_on": [],
                         "allowed_paths": ["src/"],
+                        "setup_commands": ["python3 -c 'print(1)'"],
                         "baseline_commands": ["python3 -m unittest"],
                         "completion_commands": ["python3 -m unittest"],
                         "acceptance_criteria": ["done"],
+                        "allow_no_changes": True,
+                        "report_only": True,
                         "prompt": "Do the task",
                     }
                 ]
             )
             self.assertEqual(tasks[0]["id"], "task-1")
+            self.assertTrue(tasks[0]["allow_no_changes"])
+            self.assertTrue(tasks[0]["report_only"])
+            self.assertEqual(tasks[0]["setup_commands"], ["python3 -c 'print(1)'"])
 
 
 if __name__ == "__main__":

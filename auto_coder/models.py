@@ -103,6 +103,7 @@ class TaskSpec:
     depends_on: list[str] = field(default_factory=list)
     allowed_paths: list[str] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
+    setup_commands: list[str] = field(default_factory=list)
     baseline_commands: list[str] = field(default_factory=list)
     completion_commands: list[str] = field(default_factory=list)
     acceptance_criteria: list[str] = field(default_factory=list)
@@ -112,6 +113,8 @@ class TaskSpec:
     cooldown_minutes: int = 60
     estimated_effort: str = ""
     estimated_tokens: int | None = None
+    allow_no_changes: bool = False
+    report_only: bool = False
     prompt: str = ""
 
     @classmethod
@@ -129,6 +132,7 @@ class TaskSpec:
             depends_on=list(payload.get("depends_on", [])),
             allowed_paths=list(payload.get("allowed_paths", [])),
             protected_paths=list(payload.get("protected_paths", [])),
+            setup_commands=list(payload.get("setup_commands", [])),
             baseline_commands=list(payload.get("baseline_commands", payload.get("test_commands", []))),
             completion_commands=list(payload.get("completion_commands", payload.get("test_commands", []))),
             acceptance_criteria=list(payload.get("acceptance_criteria", [])),
@@ -140,6 +144,8 @@ class TaskSpec:
             estimated_tokens=(
                 int(payload["estimated_tokens"]) if payload.get("estimated_tokens") is not None else None
             ),
+            allow_no_changes=bool(payload.get("allow_no_changes", False)),
+            report_only=bool(payload.get("report_only", False)),
             prompt=str(payload.get("prompt", "")),
         )
 
@@ -152,6 +158,7 @@ class TaskSpec:
             "depends_on": self.depends_on,
             "allowed_paths": self.allowed_paths,
             "protected_paths": self.protected_paths,
+            "setup_commands": self.setup_commands,
             "baseline_commands": self.baseline_commands,
             "completion_commands": self.completion_commands,
             "acceptance_criteria": self.acceptance_criteria,
@@ -166,4 +173,8 @@ class TaskSpec:
             payload["description"] = self.description
         if self.estimated_tokens is not None:
             payload["estimated_tokens"] = self.estimated_tokens
+        if self.allow_no_changes:
+            payload["allow_no_changes"] = True
+        if self.report_only:
+            payload["report_only"] = True
         return payload
