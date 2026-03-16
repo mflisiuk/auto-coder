@@ -799,16 +799,33 @@ def _load_history_for_task(config: dict[str, Any], task_id: str) -> list[dict[st
 def _resolve_manager_backend(config: dict[str, Any], task: dict[str, Any]):
     if not config.get("manager_enabled", True):
         return None
+
+    # Support manager fallback: codex -> anthropic
     backend_name = str(config.get("manager_backend", "anthropic")).strip().lower()
-    backend_cls = {
+    fallback_name = str(config.get("manager_fallback", "anthropic")).strip().lower()
+
+    backends = {
         "anthropic": AnthropicManagerBackend,
         "codex": CodexManagerBridge,
-    }.get(backend_name)
+    }
+
+    # Try primary backend
+    backend_cls = backends.get(backend_name)
     if backend_cls is None:
         raise RuntimeError(f"Unsupported manager backend: {backend_name}")
-    if not backend_cls.is_available():
-        raise RuntimeError(f"Manager backend unavailable: {backend_name}")
-    return backend_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    if backend_cls.is_available():
+        return backend_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    # Try fallback backend
+    fallback_cls = backends.get(fallback_name)
+    if fallback_cls is None:
+        raise RuntimeError(f"Unsupported manager fallback: {fallback_name}")
+
+    if fallback_cls.is_available():
+        return fallback_cls(task_id=str(task["id"]), task=task, config=config, state_path=config["state_path"])
+
+    raise RuntimeError(f"Manager backends unavailable: {backend_name} (primary), {fallback_name} (fallback)")
 
 
 def _recover_runtime(config: dict[str, Any], state: dict[str, Any]) -> dict[str, list[str]]:
