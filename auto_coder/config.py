@@ -76,11 +76,13 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "test_timeout_minutes": 20,
         "quota_cooldown_hours": 4,
         "stale_running_timeout_minutes": 120,
+        "lease_heartbeat_interval_seconds": 30,
         "cleanup_worktree_older_than_days": 7,
         "cleanup_worktree_on_success": True,
         "cleanup_worktree_on_failure": False,
         "auto_commit": False,
         "auto_push": False,
+        "auto_pr": False,
         "auto_merge": False,
         "review_required": True,
         "manager_enabled": True,
@@ -179,10 +181,11 @@ agent_timeout_minutes: 45
 test_timeout_minutes: 20
 quota_cooldown_hours: 4
 
-# Git automation (all false = safe defaults)
+# Git automation (all false = safe defaults; set to true for full autonomy)
 auto_commit: false
 auto_push: false
-auto_merge: false
+auto_pr: false          # create a GitHub PR after push (requires gh CLI)
+auto_merge: false       # auto-merge the PR after creation (requires gh CLI)
 
 # Review / manager
 review_required: true

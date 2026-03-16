@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +26,7 @@ from auto_coder.router import ProviderRouter
 from auto_coder.storage import (
     acquire_lease,
     create_run_tick,
+    export_state,
     get_task_runtime,
     latest_work_order_for_task,
     list_attempts_for_task,
@@ -33,6 +36,7 @@ from auto_coder.storage import (
     recover_interrupted_runs,
     release_lease,
     set_task_runtime,
+    update_lease_heartbeat,
     upsert_work_order,
     update_run_tick,
 )
@@ -1246,14 +1250,37 @@ def run_one_task(
             )
         else:
             worker_adapter = build_worker_adapter(provider)
-            worker_result = worker_adapter.run(
-                prompt=prompt,
-                worktree=worktree,
-                report_dir=report_dir,
-                model=task.get("worker_model") or config.get(f"{provider}_model"),
-                max_budget_usd=task.get("worker_budget_usd"),
-                timeout_minutes=config["agent_timeout_minutes"],
+
+            # Heartbeat thread: keeps the lease alive for long-running workers by
+            # updating heartbeat_at every N seconds so expire_stale_leases does not
+            # kill the lease before the worker is done.
+            _heartbeat_stop = threading.Event()
+            def _heartbeat_loop(stop_event: threading.Event, db_path: object, tid: str) -> None:
+                interval = int(config.get("lease_heartbeat_interval_seconds", 30))
+                while not stop_event.wait(interval):
+                    if db_path and lease_acquired:
+                        try:
+                            update_lease_heartbeat(db_path, resource_type="task", resource_id=tid)
+                        except Exception:
+                            pass
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                args=(_heartbeat_stop, config.get("state_db_path"), task_id),
+                daemon=True,
             )
+            _heartbeat_thread.start()
+            try:
+                worker_result = worker_adapter.run(
+                    prompt=prompt,
+                    worktree=worktree,
+                    report_dir=report_dir,
+                    model=task.get("worker_model") or config.get(f"{provider}_model"),
+                    max_budget_usd=task.get("worker_budget_usd"),
+                    timeout_minutes=config["agent_timeout_minutes"],
+                )
+            finally:
+                _heartbeat_stop.set()
+
             tokens = worker_result.token_usage
             if tokens:
                 router.record(provider, tokens)
@@ -1285,30 +1312,6 @@ def run_one_task(
                 )
                 return 1
 
-        agent_report_path = worktree / "AGENT_REPORT.json"
-        agent_report = _load_json(agent_report_path, {})
-        if not agent_report_path.exists() or not isinstance(agent_report, dict):
-            outcome = "waiting_for_retry"
-            _update_runtime_state(
-                config,
-                state,
-                task,
-                task_id=task_id,
-                run_id=run_id,
-                status="waiting_for_retry",
-                task_status="waiting_for_retry",
-                attempt_status="agent_report_missing",
-                branch=branch,
-                report_dir=report_dir,
-                note="Worker did not leave a valid AGENT_REPORT.json.",
-                extra={"attempt_count": attempt_count, "retry_after": _now()},
-                worker_name=provider,
-                work_order_id=work_order_id,
-                work_order_status="retry_pending",
-            )
-            return 1
-        _save_json(report_dir / "AGENT_REPORT.json", agent_report)
-
         changed = _changed_files(worktree)
         _save_json(report_dir / "changed-files.json", {"files": changed})
 
@@ -1334,6 +1337,21 @@ def run_one_task(
                 work_order_status="retry_pending",
             )
             return 1
+
+        agent_report_path = worktree / "AGENT_REPORT.json"
+        agent_report = _load_json(agent_report_path, {})
+        if not agent_report_path.exists() or not isinstance(agent_report, dict):
+            # Worker returned 0 — synthesize a partial report rather than failing.
+            # This handles agents that succeed but forget to write AGENT_REPORT.json.
+            agent_report = {
+                "status": "partial",
+                "summary": "Worker completed without writing AGENT_REPORT.json",
+                "completed": [f"Changed {len(changed)} file(s)"] if changed else [],
+                "issues": ["AGENT_REPORT.json was not written by the worker"],
+                "next": "Review changed files for correctness",
+            }
+            _save_json(agent_report_path, agent_report)
+        _save_json(report_dir / "AGENT_REPORT.json", agent_report)
 
         if not changed and not allow_no_changes:
             outcome = "waiting_for_retry"
@@ -1554,6 +1572,44 @@ def run_one_task(
                     )
                     return 1
 
+                # Create a GitHub PR after a successful push.
+                pr_url: str | None = None
+                if config.get("auto_pr") and shutil.which("gh"):
+                    base_branch = str(config.get("base_branch", "main"))
+                    pr_title = f"chore(ai): {task.get('title', task_id)} [auto-coder]"
+                    pr_body = "\n".join([
+                        f"Auto-generated by auto-coder for task `{task_id}`.",
+                        "",
+                        f"**Work order:** `{work_order_id}`",
+                        f"**Worker:** `{provider}`",
+                        "",
+                        "## Changes",
+                        "\n".join(f"- `{f}`" for f in changed_for_commit),
+                    ])
+                    pr_r = subprocess.run(
+                        ["gh", "pr", "create",
+                         "--title", pr_title,
+                         "--body", pr_body,
+                         "--base", base_branch,
+                         "--head", branch],
+                        cwd=str(worktree),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if pr_r.returncode == 0:
+                        pr_url = pr_r.stdout.strip()
+                        _save_json(report_dir / "pr.json", {"url": pr_url, "branch": branch})
+                        # Auto-merge if configured.
+                        if config.get("auto_merge") and pr_url:
+                            subprocess.run(
+                                ["gh", "pr", "merge", "--squash", "--auto", pr_url],
+                                cwd=str(worktree),
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                            )
+
         outcome = "completed"
         _update_runtime_state(
             config,
@@ -1611,9 +1667,13 @@ def run_one_task(
 
 
 def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
+    loop_mode = config.get("_loop_mode", False)
+    max_ticks = int(config.get("_max_ticks", 100))
     exit_code = 0
     with _file_lock(config["lock_path"]):
         _recover_runtime(config, state)
+        if loop_mode:
+            return _run_loop(config, tasks, state, max_ticks=max_ticks)
         max_tasks = max(1, int(config.get("max_tasks_per_run", 1)))
         processed = 0
         attempted_ids: set[str] = set()
@@ -1629,11 +1689,55 @@ def run_batch(config: dict[str, Any], tasks: list[dict], state: dict) -> int:
                 exit_code = task_exit
             if config.get("state_db_path"):
                 fresh = list_task_specs(config["state_db_path"])
-                existing_ids = {str(task.get("id")) for task in tasks}
+                existing_ids = {str(t.get("id")) for t in tasks}
                 for spec in fresh:
-                    task_id = str(spec.get("id"))
-                    if task_id not in existing_ids:
+                    if str(spec.get("id")) not in existing_ids:
                         tasks.append(spec)
+    return exit_code
+
+
+def _run_loop(config: dict[str, Any], tasks: list[dict], state: dict, *, max_ticks: int) -> int:
+    """Run ticks continuously until all tasks are done, blocked, or max_ticks reached.
+
+    Each tick selects one task, executes it, and refreshes state from SQLite so
+    dynamically created repair tasks are picked up immediately.
+    """
+    exit_code = 0
+    tick = 0
+
+    while tick < max_ticks:
+        # Refresh task list and state from DB to pick up auto-generated repair tasks.
+        if config.get("state_db_path"):
+            fresh = list_task_specs(config["state_db_path"])
+            existing_ids = {str(t.get("id")) for t in tasks}
+            for spec in fresh:
+                if str(spec.get("id")) not in existing_ids:
+                    tasks.append(spec)
+            db_state = export_state(config["state_db_path"])
+            state.update(db_state)
+
+        task = select_task(tasks, state)
+        if not task:
+            completed = sum(1 for t in state.get("tasks", {}).values() if t.get("status") == "completed")
+            total = len(state.get("tasks", {}))
+            print(f"[loop] No ready tasks — stopping. {completed}/{total} tasks completed.")
+            break
+
+        tick += 1
+        task_id = str(task.get("id", ""))
+        print(f"[loop tick={tick}/{max_ticks}] {task_id}")
+
+        task_exit = run_one_task(config, task, state)
+        if task_exit != 0:
+            exit_code = task_exit
+
+        # Sync state after each tick so the next select_task sees fresh status.
+        if config.get("state_db_path"):
+            state.update(export_state(config["state_db_path"]))
+
+    if tick >= max_ticks:
+        print(f"[loop] Reached max_ticks={max_ticks} — stopping.")
+
     return exit_code
 
 

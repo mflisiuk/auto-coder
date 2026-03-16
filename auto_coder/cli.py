@@ -376,6 +376,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         config["dry_run"] = True
     if args.task:
         config["_requested_task"] = args.task
+    if getattr(args, "loop", False):
+        config["_loop_mode"] = True
+        config["_max_ticks"] = getattr(args, "max_ticks", 100)
 
     if not config.get("enabled", True):
         print("auto-coder is disabled in config.yaml")
@@ -780,6 +783,10 @@ def main() -> None:
     p_run.add_argument("--live", action="store_true", help="Execute agents (overrides dry_run)")
     p_run.add_argument("--dry-run", action="store_true", dest="dry_run",
                        help="Force dry run (overrides config)")
+    p_run.add_argument("--loop", action="store_true",
+                       help="Keep running ticks until all tasks complete or --max-ticks is reached")
+    p_run.add_argument("--max-ticks", type=int, default=100, dest="max_ticks",
+                       help="Maximum number of ticks in --loop mode (default: 100)")
 
     p_migrate = sub.add_parser("migrate", help="Import a legacy tasks.yaml into tasks.local.yaml")
     p_migrate.add_argument("source", help="Path to legacy YAML file with top-level tasks:")

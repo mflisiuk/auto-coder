@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -747,20 +747,44 @@ def latest_quota_snapshots(db_path: Path) -> list[sqlite3.Row]:
     return rows
 
 
-def expire_stale_leases(db_path: Path) -> list[sqlite3.Row]:
+def update_lease_heartbeat(db_path: Path, *, resource_type: str, resource_id: str) -> None:
+    """Renew the heartbeat timestamp for an active lease so it is not expired."""
+    if not db_path.exists():
+        return
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE leases SET heartbeat_at = CURRENT_TIMESTAMP WHERE resource_type = ? AND resource_id = ?",
+            (resource_type, resource_id),
+        )
+        conn.commit()
+
+
+def expire_stale_leases(db_path: Path, *, heartbeat_grace_seconds: int = 90) -> list[sqlite3.Row]:
+    """Expire leases whose expires_at has passed AND whose heartbeat is stale.
+
+    A lease with a recent heartbeat is considered still-active even if expires_at
+    has technically passed, preventing false interruptions of long-running workers.
+    """
     if not db_path.exists():
         return []
     now_iso = _now_iso()
+    heartbeat_cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=heartbeat_grace_seconds)
+    ).replace(microsecond=0).isoformat()
     with connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT id, resource_type, resource_id, run_tick_id, expires_at
             FROM leases
             WHERE expires_at IS NOT NULL AND expires_at <= ?
+              AND (heartbeat_at IS NULL OR heartbeat_at <= ?)
             """,
-            (now_iso,),
+            (now_iso, heartbeat_cutoff),
         ).fetchall()
-        conn.execute("DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= ?", (now_iso,))
+        conn.execute(
+            "DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= ? AND (heartbeat_at IS NULL OR heartbeat_at <= ?)",
+            (now_iso, heartbeat_cutoff),
+        )
         conn.commit()
     return rows
 

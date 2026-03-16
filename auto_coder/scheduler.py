@@ -41,8 +41,6 @@ def select_task(tasks: list[dict[str, Any]], state: dict[str, Any]) -> dict[str,
     for task in tasks:
         if not task.get("enabled", True):
             continue
-        if task.get("mode", "safe") != "safe":
-            continue
         task_id = task.get("id")
         if not task_id:
             continue
