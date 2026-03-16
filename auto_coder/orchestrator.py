@@ -17,6 +17,7 @@ from typing import Any
 
 from auto_coder.managers.anthropic import AnthropicManagerBackend
 from auto_coder.managers.base import ReviewDecision
+from auto_coder.managers.cc_bridge import CcManagerBridge
 from auto_coder.managers.codex_bridge import CodexManagerBridge
 from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.prompts.worker_instruction import build_worker_prompt
@@ -832,6 +833,8 @@ def _resolve_manager_backend(config: dict[str, Any], task: dict[str, Any]):
     backends = {
         "anthropic": AnthropicManagerBackend,
         "codex": CodexManagerBridge,
+        "cc": CcManagerBridge,
+        "claude": CcManagerBridge,
     }
 
     # Try primary backend

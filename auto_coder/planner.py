@@ -53,6 +53,8 @@ class Planner:
             return bool(os.environ.get("ANTHROPIC_API_KEY"))
         if backend == "codex":
             return shutil.which("codex") is not None and shutil.which("node") is not None
+        if backend in ("cc", "claude"):
+            return shutil.which("claude") is not None
         return False
 
     def refresh_if_changed(self) -> bool:
