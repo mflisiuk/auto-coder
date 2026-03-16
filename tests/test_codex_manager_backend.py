@@ -99,6 +99,63 @@ class TestCodexManagerBridge(unittest.TestCase):
             self.assertEqual(decision.verdict, "retry")
             self.assertEqual(decision.next_work_order["selected_worker"], "codex")
 
+    def test_invalid_worker_name_falls_back_to_default_worker(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            config["default_worker"] = "codex"
+            bridge = CodexManagerBridge(
+                task_id="task-1",
+                task={"id": "task-1", "title": "Task 1", "prompt": "Build feature", "allowed_paths": ["src/"]},
+                config=config,
+                state_path=config["state_path"],
+            )
+            fake_stdout = json.dumps(
+                {
+                    "ok": True,
+                    "thread_id": "thread-123",
+                    "result": {
+                        "goal": "Implement feature",
+                        "scope_summary": "Task 1 slice",
+                        "allowed_paths": ["src/"],
+                        "completion_commands": ["python3 -m unittest"],
+                        "selected_worker": "python",
+                        "manager_feedback": "Focus on the happy path"
+                    }
+                }
+            )
+            with patch("subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = fake_stdout
+                run.return_value.stderr = ""
+                work_order = bridge.create_work_order(
+                    {"id": "task-1", "title": "Task 1", "prompt": "Build feature", "allowed_paths": ["src/"]},
+                    history=[],
+                )
+
+            self.assertEqual(work_order["selected_worker"], "codex")
+
+    def test_probe_live_uses_bridge_action(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self._config(root)
+            fake_stdout = json.dumps(
+                {
+                    "ok": True,
+                    "result": {
+                        "status": "ok",
+                        "backend": "codex",
+                    },
+                }
+            )
+            with patch("subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = fake_stdout
+                run.return_value.stderr = ""
+                result = CodexManagerBridge.probe_live(config)
+
+            self.assertIn('"status": "ok"', result)
+
 
 if __name__ == "__main__":
     unittest.main()

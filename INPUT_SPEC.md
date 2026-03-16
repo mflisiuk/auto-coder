@@ -21,6 +21,7 @@ The planner must refuse to start if any of these are missing:
 
 These are not mandatory for the first planning pass, but they materially improve quality:
 
+- `PLANNING_HINTS.md`
 - `CONSTRAINTS.md`
 - `ARCHITECTURE_NOTES.md`
 - `tasks.local.yaml`
@@ -95,6 +96,17 @@ Suggested sections:
 - `Forbidden Changes`
 - `Security Boundaries`
 - `Operational Boundaries`
+
+### PLANNING_HINTS.md
+
+Optional, but strongly recommended when the repo has conventions the planner should preserve.
+
+Suggested contents:
+
+- preferred command naming already used in the repo
+- naming conventions for modules, jobs, or endpoints
+- preferred API pagination style
+- flags or patterns to reuse instead of inventing alternates
 
 ### ARCHITECTURE_NOTES.md
 

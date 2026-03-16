@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.managers.base import ManagerBackend, ReviewDecision
 from auto_coder.storage import load_manager_thread, save_manager_messages
 
@@ -31,6 +32,22 @@ class CodexManagerBridge(ManagerBackend):
     def is_available(cls) -> bool:
         return shutil.which("codex") is not None and shutil.which("node") is not None
 
+    @classmethod
+    def probe_live(cls, config: dict[str, Any]) -> str:
+        response = cls._run_bridge_action(
+            config=config,
+            action="probe-live",
+            payload={
+                "cwd": str(config["project_root"]),
+                "model": config.get("manager_model"),
+                "reasoning_effort": config.get("codex_reasoning_effort", "medium"),
+            },
+        )
+        result = dict(response.get("result") or {})
+        if result.get("status") != "ok":
+            raise RuntimeError(f"Codex probe returned unexpected payload: {result}")
+        return json.dumps(result, ensure_ascii=False)
+
     def create_work_order(
         self,
         task: dict[str, Any],
@@ -50,9 +67,13 @@ class CodexManagerBridge(ManagerBackend):
             },
         )
         result = dict(response["result"])
-        sequence_no = len([entry for entry in history if entry.get("kind") == "work_order"]) + 1
-        selected_worker = result.get("selected_worker") or (
-            (task.get("preferred_workers") or [self.config.get("default_worker", "cc")])[0]
+        sequence_no = max(
+            [int(entry.get("sequence_no", 0)) for entry in history if entry.get("kind") == "work_order"],
+            default=0,
+        ) + 1
+        selected_worker = self._resolve_worker_name(
+            result.get("selected_worker"),
+            task=task,
         )
         work_order = {
             "id": f"{task.get('id')}-wo-{sequence_no:02d}",
@@ -97,7 +118,10 @@ class CodexManagerBridge(ManagerBackend):
         result = dict(response["result"])
         next_work_order = None
         if isinstance(result.get("next_work_order"), dict):
-            sequence_no = len([entry for entry in history if entry.get("kind") == "work_order"]) + 1
+            sequence_no = max(
+                [int(entry.get("sequence_no", 0)) for entry in history if entry.get("kind") == "work_order"],
+                default=0,
+            ) + 1
             next_work_order = {
                 "id": f"{task.get('id')}-wo-{sequence_no:02d}",
                 "task_id": task.get("id"),
@@ -109,9 +133,9 @@ class CodexManagerBridge(ManagerBackend):
                     result["next_work_order"].get("completion_commands")
                     or task.get("completion_commands", task.get("test_commands", []))
                 ),
-                "selected_worker": str(
-                    result["next_work_order"].get("selected_worker")
-                    or (task.get("preferred_workers") or [self.config.get("default_worker", "cc")])[0]
+                "selected_worker": self._resolve_worker_name(
+                    result["next_work_order"].get("selected_worker"),
+                    task=task,
                 ),
                 "manager_feedback": str(result["next_work_order"].get("manager_feedback") or result.get("feedback", "")),
                 "status": "queued",
@@ -149,20 +173,41 @@ class CodexManagerBridge(ManagerBackend):
     # ----------------------------------------------------------------- helpers
 
     def _call_bridge(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        bridge_path = Path(self.config.get("codex_bridge_path") or (Path(__file__).resolve().parents[2] / "bridges" / "codex-manager" / "src" / "index.mjs"))
+        self._append_message(role="user", content=json.dumps({"action": action, "payload": payload}, ensure_ascii=False))
+        parsed = self._run_bridge_action(config=self.config, action=action, payload=payload)
+        thread_id = parsed.get("thread_id")
+        if thread_id:
+            self._thread_id = str(thread_id)
+        return parsed
+
+    @classmethod
+    def _bridge_path(cls, config: dict[str, Any]) -> Path:
+        return Path(
+            config.get("codex_bridge_path")
+            or (Path(__file__).resolve().parents[2] / "bridges" / "codex-manager" / "src" / "index.mjs")
+        )
+
+    @classmethod
+    def _run_bridge_action(
+        cls,
+        *,
+        config: dict[str, Any],
+        action: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        bridge_path = cls._bridge_path(config)
         if not bridge_path.exists():
             raise RuntimeError(f"Codex bridge not found: {bridge_path}")
-        self._append_message(role="user", content=json.dumps({"action": action, "payload": payload}, ensure_ascii=False))
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
             json.dump(payload, handle, ensure_ascii=False)
             temp_path = Path(handle.name)
         try:
             result = subprocess.run(
                 ["node", str(bridge_path), action, str(temp_path)],
-                cwd=str(self.config["project_root"]),
+                cwd=str(config["project_root"]),
                 capture_output=True,
                 text=True,
-                timeout=int(self.config.get("manager_timeout_seconds", 180)),
+                timeout=int(config.get("manager_timeout_seconds", 180)),
                 check=False,
             )
         finally:
@@ -170,9 +215,6 @@ class CodexManagerBridge(ManagerBackend):
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Codex bridge failed")
         parsed = json.loads(result.stdout.strip() or "{}")
-        thread_id = parsed.get("thread_id")
-        if thread_id:
-            self._thread_id = str(thread_id)
         return parsed
 
     def _append_message(self, *, role: str, content: str) -> None:
@@ -188,3 +230,23 @@ class CodexManagerBridge(ManagerBackend):
             messages=self._messages,
             external_thread_id=self._thread_id or None,
         )
+
+    def _resolve_worker_name(self, requested: object, *, task: dict[str, Any]) -> str:
+        requested_name = str(requested or "").strip()
+        if requested_name in SUPPORTED_WORKERS:
+            return requested_name
+
+        for candidate in task.get("preferred_workers") or []:
+            name = str(candidate or "").strip()
+            if name in SUPPORTED_WORKERS:
+                return name
+
+        default_worker = str(self.config.get("default_worker", "cc")).strip()
+        if default_worker in SUPPORTED_WORKERS:
+            return default_worker
+
+        fallback_worker = str(self.config.get("fallback_worker", "")).strip()
+        if fallback_worker in SUPPORTED_WORKERS:
+            return fallback_worker
+
+        return "codex"

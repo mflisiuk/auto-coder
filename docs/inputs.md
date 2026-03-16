@@ -9,6 +9,7 @@
 
 ## Silnie zalecane
 
+- `PLANNING_HINTS.md`
 - `CONSTRAINTS.md`
 - `ARCHITECTURE_NOTES.md`
 
@@ -43,6 +44,15 @@ Najlepiej umieścić tu:
 - security boundaries
 - forbidden changes
 - test expectations
+
+### `PLANNING_HINTS.md`
+
+Tu warto dopisać rzeczy, których planner nie powinien zgadywać:
+
+- istniejące nazewnictwo komend
+- preferowane flagi i konwencje paginacji
+- naming conventions dla modułów, endpointów i jobów
+- wzorce, które repo już stosuje i które należy utrzymać
 
 ## Kiedy planner ma odrzucać brief
 

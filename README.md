@@ -8,9 +8,12 @@
 ```bash
 git clone <twoje-repo-z-auto-coderem> && cd auto-coder
 pip install -e .
+auto-coder bootstrap-brief /path/to/your/repo   # opcjonalnie dla istniejącego repo
 auto-coder init
 export ANTHROPIC_API_KEY=...  # lub skonfiguruj codex
-auto-coder run --live
+auto-coder doctor --probe-live
+auto-coder plan
+auto-coder run --dry-run
 ```
 
 ## Funkcjonalności
@@ -21,6 +24,8 @@ auto-coder run --live
 - Automatyczne wykrywanie dostępności providerów
 - Worker CLI w osobnym git worktree
 - Policy checks i retry loop
+- `doctor --probe-live` dla realnego sprawdzenia managera
+- `work_progress.md` aktualizowany przy domknięciu taska
 - [Architektura v1](docs/architecture.md)
 
 ## Dokumentacja

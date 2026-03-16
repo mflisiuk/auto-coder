@@ -72,6 +72,7 @@ class Planner:
 
         roadmap = _read(self.project_root / "ROADMAP.md")
         project_context = _read(self.project_root / "PROJECT.md")
+        planning_hints = _read(self.project_root / "PLANNING_HINTS.md")
         constraints = _read(self.project_root / "CONSTRAINTS.md")
         architecture_notes = _read(self.project_root / "ARCHITECTURE_NOTES.md")
 
@@ -81,6 +82,7 @@ class Planner:
         generated_tasks = self._call_api(
             roadmap=roadmap,
             project_context=project_context,
+            planning_hints=planning_hints,
             constraints=constraints,
             architecture_notes=architecture_notes,
         )
@@ -111,11 +113,13 @@ class Planner:
         *,
         roadmap: str,
         project_context: str,
+        planning_hints: str,
         constraints: str,
         architecture_notes: str,
     ) -> list[dict[str, Any]]:
         user_msg = PLANNER_USER_TEMPLATE.format(
             project_context=project_context or "(no PROJECT.md provided)",
+            planning_hints=planning_hints or "(none)",
             constraints=constraints or "(none)",
             architecture_notes=architecture_notes or "(none)",
             roadmap=roadmap,
@@ -126,6 +130,7 @@ class Planner:
             parsed = self._call_codex_bridge(
                 roadmap=roadmap,
                 project_context=project_context,
+                planning_hints=planning_hints,
                 constraints=constraints,
                 architecture_notes=architecture_notes,
             )
@@ -154,6 +159,7 @@ class Planner:
         *,
         roadmap: str,
         project_context: str,
+        planning_hints: str,
         constraints: str,
         architecture_notes: str,
     ) -> dict[str, Any]:
@@ -164,6 +170,7 @@ class Planner:
         payload = {
             "roadmap": roadmap,
             "project_context": project_context,
+            "planning_hints": planning_hints,
             "constraints": constraints,
             "architecture_notes": architecture_notes,
             "cwd": str(self.project_root),
@@ -258,16 +265,25 @@ class Planner:
         existing_by_title = {str(task.get("title", "")).strip().lower(): str(task["id"]) for task in existing_tasks if task.get("id")}
         used_ids = {str(task["id"]) for task in existing_tasks if task.get("id")}
         stable_tasks: list[dict[str, Any]] = []
+        remapped_ids: dict[str, str] = {}
         for index, task in enumerate(tasks, start=1):
             item = dict(task)
+            original_id = str(item.get("id", "")).strip()
             fingerprint = _task_fingerprint(item)
             candidate_id = existing_by_fingerprint.get(fingerprint) or existing_by_title.get(str(item.get("title", "")).strip().lower())
             if candidate_id:
                 item["id"] = candidate_id
             else:
                 item["id"] = _ensure_unique_id(_slugify(item.get("id") or item.get("title") or f"task-{index}"), used_ids)
+            if original_id:
+                remapped_ids[original_id] = str(item["id"])
             used_ids.add(str(item["id"]))
             stable_tasks.append(item)
+        for item in stable_tasks:
+            item["depends_on"] = [
+                remapped_ids.get(str(dependency), str(dependency))
+                for dependency in item.get("depends_on", [])
+            ]
         return stable_tasks
 
     def _save_tasks(self, path: Path, tasks: list[dict[str, Any]]) -> None:
@@ -292,11 +308,9 @@ def _read(path: Path) -> str:
 
 def _brief_hash(project_root: Path) -> str:
     parts = []
-    for name in ("ROADMAP.md", "PROJECT.md", "CONSTRAINTS.md", "ARCHITECTURE_NOTES.md"):
+    for name in ("ROADMAP.md", "PROJECT.md", "PLANNING_HINTS.md", "CONSTRAINTS.md", "ARCHITECTURE_NOTES.md"):
         path = project_root / name
         parts.append(path.read_text(encoding="utf-8") if path.exists() else "")
-    tasks_local_path = project_root / ".auto-coder" / "tasks.local.yaml"
-    parts.append(tasks_local_path.read_text(encoding="utf-8") if tasks_local_path.exists() else "")
     return hashlib.sha256("\n---\n".join(parts).encode("utf-8")).hexdigest()
 
 

@@ -26,10 +26,7 @@ class ProviderRouter:
 
     def pick(self, preferred: str, estimated_tokens: int | None = None) -> str:
         """Return the best available provider, falling back when quota is tight."""
-        candidates = [preferred]
-        fallback = self.config.get("providers", {}).get(preferred, {}).get("fallback")
-        if fallback:
-            candidates.append(str(fallback))
+        candidates = self._provider_chain(preferred)
 
         for provider in candidates:
             snapshot = self.check_quota(provider)
@@ -135,6 +132,34 @@ class ProviderRouter:
             else:
                 probes[provider] = LocalCounterQuotaProbe(provider, self.usage_path)
         return probes
+
+    def _provider_chain(self, preferred: str) -> list[str]:
+        providers_cfg = self.config.get("providers", {})
+        chain: list[str] = []
+        seen: set[str] = set()
+        current = str(preferred or "").strip()
+
+        while current and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            fallback = str(providers_cfg.get(current, {}).get("fallback") or "").strip()
+            current = fallback
+
+        fallback_worker = str(self.config.get("fallback_worker", "")).strip()
+        if fallback_worker and fallback_worker not in seen:
+            chain.append(fallback_worker)
+            seen.add(fallback_worker)
+
+        if not chain:
+            default_worker = str(self.config.get("default_worker", "cc")).strip()
+            chain.append(default_worker)
+            seen.add(default_worker)
+
+        for provider in list(chain):
+            if provider not in self._probes:
+                self._probes[provider] = LocalCounterQuotaProbe(provider, self.usage_path)
+
+        return chain
 
     def _persist_snapshot(self, snapshot: QuotaSnapshot) -> None:
         if not self.state_db_path:

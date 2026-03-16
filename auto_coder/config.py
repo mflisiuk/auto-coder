@@ -83,6 +83,7 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "manager_enabled": True,
         "manager_backend": "anthropic",
         "manager_model": DEFAULT_MANAGER_MODELS["anthropic"],
+        "manager_timeout_seconds": 180,
         "codex_reasoning_effort": "medium",
         "default_worker": "cc",
         "fallback_worker": "cch",
@@ -92,6 +93,9 @@ def default_config(project_root: Path) -> dict[str, Any]:
             "ccg": {"token_limit_daily": 100_000, "quota_threshold": 0.80, "fallback": "cch"},
             "cc":  {"token_limit_daily": 500_000, "quota_threshold": 0.90, "fallback": "cch"},
             "cch": {"token_limit_daily": None,    "quota_threshold": 1.00, "fallback": None},
+            "codex": {"token_limit_daily": None, "quota_threshold": 1.00, "fallback": "cch"},
+            "qwen": {"token_limit_daily": None, "quota_threshold": 1.00, "fallback": "cch"},
+            "gemini": {"token_limit_daily": None, "quota_threshold": 1.00, "fallback": "cch"},
         },
         "cc_usage_command": [],
         "ccg_usage_command": [],
@@ -178,6 +182,7 @@ review_required: true
 manager_enabled: true
 manager_backend: anthropic
 manager_model: ""        # empty = backend-specific default (anthropic=claude-opus-4-6, codex=gpt-5)
+manager_timeout_seconds: 180
 codex_reasoning_effort: medium
 
 # Default worker CLI and fallback
@@ -202,6 +207,18 @@ providers:
     token_limit_daily: null
     quota_threshold: 1.00
     fallback: null
+  codex:
+    token_limit_daily: null
+    quota_threshold: 1.00
+    fallback: cch
+  qwen:
+    token_limit_daily: null
+    quota_threshold: 1.00
+    fallback: cch
+  gemini:
+    token_limit_daily: null
+    quota_threshold: 1.00
+    fallback: cch
 
 # Optional provider-specific quota commands
 cc_usage_command: []

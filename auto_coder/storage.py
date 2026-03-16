@@ -316,6 +316,37 @@ def update_run_tick(db_path: Path, run_tick_id: str, *, status: str, payload: di
         conn.commit()
 
 
+def list_run_ticks(db_path: Path, *, limit: int = 20) -> list[sqlite3.Row]:
+    if not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, status, payload_json, created_at, updated_at
+            FROM run_ticks
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return rows
+
+
+def get_run_tick(db_path: Path, run_tick_id: str) -> sqlite3.Row | None:
+    if not db_path.exists():
+        return None
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, status, payload_json, created_at, updated_at
+            FROM run_ticks
+            WHERE id = ?
+            """,
+            (run_tick_id,),
+        ).fetchone()
+    return row
+
+
 def record_attempt(
     db_path: Path,
     *,
@@ -354,6 +385,58 @@ def list_attempts_for_task(db_path: Path, task_id: str) -> list[sqlite3.Row]:
             (task_id,),
         ).fetchall()
     return rows
+
+
+def force_task_retry(db_path: Path, task_id: str, *, note: str, retry_after: str) -> bool:
+    if not db_path.exists():
+        return False
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, title, priority, payload_json FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        try:
+            payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        payload["note"] = note
+        payload["retry_after"] = retry_after
+        conn.execute(
+            """
+            UPDATE tasks
+            SET status = 'waiting_for_retry', payload_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (json.dumps(payload, ensure_ascii=False), task_id),
+        )
+        latest_work_order = conn.execute(
+            """
+            SELECT id, payload_json
+            FROM work_orders
+            WHERE task_id = ?
+            ORDER BY sequence_no DESC, id DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if latest_work_order:
+            try:
+                work_order_payload = json.loads(str(latest_work_order["payload_json"])) if latest_work_order["payload_json"] else {}
+            except Exception:
+                work_order_payload = {}
+            work_order_payload["forced_retry"] = True
+            conn.execute(
+                """
+                UPDATE work_orders
+                SET status = 'retry_pending', payload_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (json.dumps(work_order_payload, ensure_ascii=False), str(latest_work_order["id"])),
+            )
+        conn.commit()
+    return True
 
 
 def acquire_lease(

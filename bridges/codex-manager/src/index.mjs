@@ -21,6 +21,9 @@ try {
 }
 
 async function runAction(action, payload) {
+  if (action === "probe-live") {
+    return runCodex(payload, buildProbePrompt(), probeSchema());
+  }
   if (action === "create-work-order") {
     return runCodex(payload, buildWorkOrderPrompt(payload), workOrderSchema());
   }
@@ -31,6 +34,14 @@ async function runAction(action, payload) {
     return runCodex(payload, buildPlanPrompt(payload), taskPlanSchema());
   }
   throw new Error(`Unsupported action: ${action}`);
+}
+
+function buildProbePrompt() {
+  return `You are a connectivity probe for auto-coder.
+
+Return only JSON matching the schema.
+Set backend to "codex".
+Do not add explanations.`;
 }
 
 async function runCodex(payload, prompt, schema) {
@@ -98,14 +109,9 @@ async function runCodex(payload, prompt, schema) {
 function buildArgs(payload, schemaPath) {
   const reasoningEffort = payload.reasoning_effort || "medium";
   const modelArgs = payload.model ? ["-m", payload.model] : [];
-  const cwdArgs = payload.cwd ? ["-C", payload.cwd] : [];
   const configArgs = ["-c", `model_reasoning_effort="${reasoningEffort}"`];
-  const baseArgs = payload.thread_id
-    ? ["exec", "resume", payload.thread_id, "-", "--json"]
-    : ["exec", "-", "--json"];
   return [
-    ...baseArgs,
-    ...cwdArgs,
+    "exec",
     ...modelArgs,
     ...configArgs,
     "--skip-git-repo-check",
@@ -113,6 +119,8 @@ function buildArgs(payload, schemaPath) {
     "read-only",
     "--output-schema",
     schemaPath,
+    "--json",
+    "-",
   ];
 }
 
@@ -220,6 +228,9 @@ ${payload.roadmap}
 PROJECT:
 ${payload.project_context}
 
+PLANNING HINTS:
+${payload.planning_hints || "(none)"}
+
 CONSTRAINTS:
 ${payload.constraints || "(none)"}
 
@@ -229,6 +240,7 @@ ${payload.architecture_notes || "(none)"}
 Rules:
 - every task must have explicit depends_on, allowed_paths, baseline_commands, completion_commands, acceptance_criteria
 - tasks must be small enough for 1-3 work orders
+- respect planning hints when they define repo-specific command, naming, or API conventions
 - keep ids stable and slug-like
 - output only JSON`;
 }
@@ -245,6 +257,18 @@ function workOrderSchema() {
       completion_commands: { type: "array", items: { type: "string" } },
       selected_worker: { type: "string" },
       manager_feedback: { type: "string" }
+    }
+  };
+}
+
+function probeSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "backend"],
+    properties: {
+      status: { type: "string", enum: ["ok"] },
+      backend: { type: "string" }
     }
   };
 }

@@ -1,6 +1,7 @@
 """Anthropic-backed manager adapter."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,29 @@ class AnthropicManagerBackend(ManagerBackend):
     def is_available(cls) -> bool:
         return ManagerBrain.is_available()
 
+    @classmethod
+    def probe_live(cls, config: dict[str, Any]) -> str:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=config.get("manager_model", "claude-opus-4-6"),
+            max_tokens=64,
+            system="Return compact JSON only.",
+            messages=[{"role": "user", "content": 'Reply with {"status":"ok","backend":"anthropic"} only.'}],
+        )
+        blocks = getattr(response, "content", []) or []
+        text = "".join(getattr(block, "text", "") for block in blocks).strip()
+        if not text:
+            raise RuntimeError("Anthropic probe returned an empty response.")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return text[:200]
+        if payload.get("status") != "ok":
+            raise RuntimeError(f"Anthropic probe returned unexpected payload: {payload}")
+        return json.dumps(payload, ensure_ascii=False)
+
     def create_work_order(
         self,
         task: dict[str, Any],
@@ -37,7 +61,10 @@ class AnthropicManagerBackend(ManagerBackend):
         repo_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         feedback = self._brain.build_worker_feedback()
-        sequence_no = len([entry for entry in history if entry.get("kind") == "work_order"]) + 1
+        sequence_no = max(
+            [int(entry.get("sequence_no", 0)) for entry in history if entry.get("kind") == "work_order"],
+            default=0,
+        ) + 1
         selected_worker = (
             (task.get("preferred_workers") or [task.get("preferred_provider") or self.config.get("default_worker", "cc")])[0]
         )

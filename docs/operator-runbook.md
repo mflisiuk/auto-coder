@@ -45,6 +45,7 @@ W repo, które ma być rozwijane:
 git init -b main                # jeśli repo jeszcze nie istnieje
 git add .
 git commit -m "initial commit"  # jeśli nie ma jeszcze HEAD
+auto-coder bootstrap-brief      # jeśli repo już ma README/docs i chcesz wygenerować pierwszy draft briefu
 auto-coder init
 ```
 
@@ -63,6 +64,7 @@ W katalogu repo muszą istnieć:
 
 - `ROADMAP.md`
 - `PROJECT.md`
+- `PLANNING_HINTS.md` jeśli repo ma własne konwencje, które planner ma respektować
 
 Silnie zalecane:
 
@@ -165,7 +167,7 @@ providers:
 W repo docelowym:
 
 ```bash
-auto-coder doctor
+auto-coder doctor --probe-live
 ```
 
 `doctor` musi przejść na zielono dla:
@@ -176,6 +178,7 @@ auto-coder doctor
 - manager backend
 - worker CLI
 - brief validation
+- manager live probe
 
 Jeśli `doctor` nie przechodzi, nie uruchamiaj `run`.
 
@@ -197,6 +200,14 @@ Jeśli chcesz nadpisać lub doprecyzować konkretne taski, edytuj:
 
 ```text
 .auto-coder/tasks.local.yaml
+```
+
+Albo użyj CLI:
+
+```bash
+auto-coder pin <task-id> --priority 5
+auto-coder prefer-worker <task-id> codex
+auto-coder disable-task <task-id>
 ```
 
 Potem uruchom:
@@ -231,12 +242,20 @@ auto_merge: false
 
 Nie włączaj `auto_merge` na start.
 
+Szybsza ścieżka operatorska:
+
+```bash
+auto-coder go-live --codex --cron '*/20 * * * *'
+```
+
 ## 12. Tick manualny live
 
 ```bash
 auto-coder run --live
 auto-coder status
 ```
+
+Po zamknięciu taska branch dostanie też `work_progress.md`, żeby wynik pracy był widoczny bez wchodzenia do CLI i bez czytania SQLite.
 
 Jeśli pierwszy live tick przejdzie sensownie:
 

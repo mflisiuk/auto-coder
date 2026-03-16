@@ -5,12 +5,14 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from auto_coder.bootstrap_brief import bootstrap_brief
 from auto_coder.config import (
     AUTO_CODER_DIR,
     CONFIG_YAML_TEMPLATE,
@@ -18,11 +20,41 @@ from auto_coder.config import (
     find_project_root,
     load_config,
 )
-from auto_coder.storage import ensure_database, list_tables, list_task_runtime, sync_tasks
+from auto_coder.operator import (
+    apply_go_live_profile,
+    apply_task_override,
+    install_cron_job,
+    install_systemd_units,
+    load_latest_report_dir,
+    now_iso,
+)
+from auto_coder.storage import (
+    ensure_database,
+    force_task_retry,
+    get_task_runtime,
+    list_attempts_for_task,
+    list_run_ticks,
+    list_tables,
+    list_task_runtime,
+    list_work_orders_for_task,
+    sync_tasks,
+)
 from auto_coder.brief_validator import validate_project_brief
 
 
 # ═══════════════════════════════════════════════════════════════════════ commands
+
+def _probe_manager_backend(config: dict[str, Any]) -> str:
+    backend = str(config.get("manager_backend", "anthropic")).strip().lower()
+    if backend == "anthropic":
+        from auto_coder.managers.anthropic import AnthropicManagerBackend
+
+        return AnthropicManagerBackend.probe_live(config)
+    if backend == "codex":
+        from auto_coder.managers.codex_bridge import CodexManagerBridge
+
+        return CodexManagerBridge.probe_live(config)
+    raise RuntimeError(f"Unsupported manager backend: {backend}")
 
 def cmd_init(args: argparse.Namespace) -> int:
     """Create .auto-coder/ scaffold in the current (or given) directory."""
@@ -57,6 +89,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("Next steps:")
     print(f"  1. Create ROADMAP.md in {target}")
     print(f"  2. Create PROJECT.md in {target}")
+    print("     or run: auto-coder bootstrap-brief")
     print(f"  3. Edit {config_path} (set dry_run: false when ready)")
     print(f"  4. Run: auto-coder plan")
     print(f"  5. Run: auto-coder run")
@@ -81,13 +114,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"default worker: {config.get('default_worker')}")
     print()
 
-    import subprocess
     from auto_coder.git_ops import resolve_worktree_base_ref
     checks: dict[str, bool] = {}
     checks["git available"] = shutil.which("git") is not None
-    checks["git remote reachable"] = subprocess.run(
+    remote_result = subprocess.run(
         ["git", "remote", "-v"], cwd=str(project_root), capture_output=True
-    ).returncode == 0
+    )
+    remote_configured = remote_result.returncode == 0 and bool(remote_result.stdout.strip())
+    checks["git remote configured"] = remote_configured or not bool(config.get("auto_push"))
     checks["state.db present"] = config["state_db_path"].exists()
     try:
         resolved_base_ref = resolve_worktree_base_ref(
@@ -122,27 +156,56 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for provider, source in sorted(probe_info.items()):
             print(f"  {provider:<8} {source}")
 
-    roadmap_exists = (project_root / "ROADMAP.md").exists()
-    project_exists = (project_root / "PROJECT.md").exists()
-    if roadmap_exists or project_exists:
-        validation = validate_project_brief(project_root)
+    validation = validate_project_brief(project_root)
+    print()
+    print("Brief validation:")
+    if validation.ok:
+        print("  OK    input brief is sufficient for planning")
+    else:
+        print(f"  FAIL  {validation.summary()}")
+        for item in validation.next_actions:
+            print(f"    - {item}")
+
+    probe_ok = True
+    if getattr(args, "probe_live", False):
         print()
-        print("Brief validation:")
-        if validation.ok:
-            print("  OK    input brief is sufficient for planning")
+        print("Live probe:")
+        try:
+            probe_output = _probe_manager_backend(config)
+        except Exception as exc:
+            probe_ok = False
+            print(f"  FAIL  manager live probe failed: {exc}")
         else:
-            print(f"  FAIL  {validation.summary()}")
-            for item in validation.next_actions:
-                print(f"    - {item}")
+            print(f"  OK    manager live probe succeeded: {probe_output[:200]}")
 
     print()
-    if all(checks.values()):
+    overall_ok = all(checks.values()) and validation.ok and probe_ok
+    if overall_ok:
         print("All checks passed.")
         return 0
     else:
         missing = [k for k, v in checks.items() if not v]
+        if not validation.ok:
+            missing.append("brief validation")
+        if not probe_ok:
+            missing.append("manager live probe")
         print(f"Some checks failed: {', '.join(missing)}")
         return 1
+
+
+def cmd_bootstrap_brief(args: argparse.Namespace) -> int:
+    project_root = Path(args.path or Path.cwd()).resolve()
+    try:
+        created = bootstrap_brief(project_root, force=bool(args.force))
+    except Exception as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    print(f"Bootstrapped brief files in {project_root}:")
+    for name, path in created.items():
+        print(f"  {name:<22} {path}")
+    print("Review the generated docs, then run: auto-coder init && auto-coder doctor && auto-coder plan")
+    return 0
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -170,6 +233,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Reading {roadmap_path} ...")
+    print(
+        "Planner backend: "
+        f"{config.get('manager_backend')} "
+        f"(timeout={int(config.get('manager_timeout_seconds', 180))}s)"
+    )
     planner = Planner(config)
     if not planner.backend_available():
         print(f"FAIL: manager backend unavailable for planning ({config.get('manager_backend')}).")
@@ -323,7 +391,24 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 2
 
     from auto_coder.orchestrator import run_batch
-    return run_batch(config, tasks, state)
+
+    exit_code = run_batch(config, tasks, state)
+    if exit_code != 0 and config["state_db_path"].exists():
+        latest = list_run_ticks(config["state_db_path"], limit=1)
+        if latest:
+            row = latest[0]
+            try:
+                payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            except Exception:
+                payload = {}
+            print()
+            print("Last run failure summary:")
+            print(f"  run_id    : {row['id']}")
+            print(f"  status    : {row['status']}")
+            print(f"  task_id   : {payload.get('task_id', '-')}")
+            print(f"  note      : {payload.get('note', '-')}")
+            print(f"  report_dir: {payload.get('report_dir', '-')}")
+    return exit_code
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
@@ -349,6 +434,266 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_runs(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    rows = list_run_ticks(config["state_db_path"], limit=int(args.limit))
+    print(f"{'RUN ID':<38} {'STATUS':<18} {'TASK':<30} {'UPDATED'}")
+    print("-" * 105)
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        task_id = str(payload.get("task_id", ""))[:30]
+        updated = str(row["updated_at"] or "")[:16]
+        print(f"{str(row['id']):<38} {str(row['status']):<18} {task_id:<30} {updated}")
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    row = get_task_runtime(config["state_db_path"], args.task_id)
+    if row is None:
+        print(f"FAIL: task not found: {args.task_id}")
+        return 1
+
+    try:
+        payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+    except Exception:
+        payload = {}
+    print(f"Task      : {row['id']}")
+    print(f"Title     : {row['title']}")
+    print(f"Status    : {row['status']}")
+    print(f"Priority  : {row['priority']}")
+    print(f"Updated   : {row['updated_at']}")
+    if payload.get("note"):
+        print(f"Note      : {payload['note']}")
+    if payload.get("retry_after"):
+        print(f"Retry after: {payload['retry_after']}")
+    print()
+
+    work_orders = list_work_orders_for_task(config["state_db_path"], args.task_id)
+    print("Work orders:")
+    if not work_orders:
+        print("  (none)")
+    for work_order in work_orders[-5:]:
+        try:
+            work_payload = json.loads(work_order["payload_json"]) if work_order["payload_json"] else {}
+        except Exception:
+            work_payload = {}
+        selected_worker = work_payload.get("selected_worker", "")
+        print(
+            f"  {work_order['id']}  status={work_order['status']}  seq={work_order['sequence_no']}"
+            f"  worker={selected_worker}"
+        )
+    print()
+
+    attempts = list_attempts_for_task(config["state_db_path"], args.task_id)
+    print("Attempts:")
+    if not attempts:
+        print("  (none)")
+    for attempt in attempts[-10:]:
+        try:
+            attempt_payload = json.loads(attempt["payload_json"]) if attempt["payload_json"] else {}
+        except Exception:
+            attempt_payload = {}
+        note = str(attempt_payload.get("note", ""))[:80]
+        print(
+            f"  #{attempt['id']} status={attempt['status']} worker={attempt['worker_name'] or ''}"
+            f" work_order={attempt['work_order_id'] or ''} note={note}"
+        )
+    return 0
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    note = args.note or "Forced retry requested by operator."
+    ok = force_task_retry(
+        config["state_db_path"],
+        args.task_id,
+        note=note,
+        retry_after=now_iso(),
+    )
+    if not ok:
+        print(f"FAIL: task not found: {args.task_id}")
+        return 1
+    print(f"Queued forced retry for {args.task_id}")
+    return 0
+
+
+def cmd_tail(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    target = Path(args.file).resolve() if args.file else config["auto_coder_dir"] / "cron.log"
+    if not target.exists():
+        latest_report_dir = load_latest_report_dir(config)
+        if latest_report_dir is not None:
+            candidates = sorted(latest_report_dir.rglob("*.log"), key=lambda item: item.stat().st_mtime)
+            if candidates:
+                target = candidates[-1]
+    if not target.exists():
+        print("FAIL: no log file found. Create .auto-coder/cron.log or run a task first.")
+        return 1
+
+    print(f"Tailing: {target}")
+    if args.follow:
+        subprocess.run(["tail", "-n", str(args.lines), "-f", str(target)], check=False)
+    else:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in lines[-int(args.lines):]:
+            print(line)
+    return 0
+
+
+def cmd_pin(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    try:
+        updated = apply_task_override(config, args.task_id, {"priority": int(args.priority), "enabled": True})
+    except Exception as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    print(f"Pinned {updated['id']} to priority {updated['priority']}")
+    return 0
+
+
+def cmd_disable_task(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    try:
+        updated = apply_task_override(config, args.task_id, {"enabled": False})
+    except Exception as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    print(f"Disabled {updated['id']}")
+    return 0
+
+
+def cmd_prefer_worker(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    try:
+        updated = apply_task_override(config, args.task_id, {"preferred_workers": [args.worker]})
+    except Exception as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    print(f"Set preferred worker for {updated['id']} to {args.worker}")
+    return 0
+
+
+def cmd_go_live(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    manager_backend = args.manager_backend
+    if args.codex:
+        manager_backend = "codex"
+    elif args.anthropic:
+        manager_backend = "anthropic"
+    default_worker = args.default_worker
+    if not default_worker and manager_backend == "codex":
+        default_worker = "codex"
+
+    updated = apply_go_live_profile(
+        config,
+        manager_backend=manager_backend,
+        default_worker=default_worker,
+    )
+    print("Updated config for go-live:")
+    for key in ("manager_backend", "default_worker", "dry_run", "auto_commit", "auto_push", "auto_merge"):
+        print(f"  {key}: {updated.get(key)}")
+
+    if args.cron:
+        block = install_cron_job(config, schedule=args.cron, with_plan=args.with_plan)
+        print()
+        print("Installed cron block:")
+        print(block.rstrip())
+    if args.systemd_interval:
+        service_path, timer_path = install_systemd_units(
+            config,
+            interval_minutes=int(args.systemd_interval),
+            enable=not args.write_only,
+        )
+        print()
+        print(f"Wrote systemd service: {service_path}")
+        print(f"Wrote systemd timer  : {timer_path}")
+    return 0
+
+
+def cmd_install_cron(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    block = install_cron_job(config, schedule=args.schedule, with_plan=args.with_plan)
+    print("Installed cron block:")
+    print(block.rstrip())
+    return 0
+
+
+def cmd_install_systemd(args: argparse.Namespace) -> int:
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    service_path, timer_path = install_systemd_units(
+        config,
+        interval_minutes=int(args.interval_minutes),
+        enable=not args.write_only,
+    )
+    print(f"Wrote systemd service: {service_path}")
+    print(f"Wrote systemd timer  : {timer_path}")
+    return 0
+
+
 # ═══════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -364,13 +709,38 @@ def main() -> None:
     p_init.add_argument("--force", action="store_true", help="Overwrite existing config")
 
     # doctor
-    sub.add_parser("doctor", help="Check environment (API key, CLIs, git)")
+    p_doctor = sub.add_parser("doctor", help="Check environment (API key, CLIs, git)")
+    p_doctor.add_argument("--probe-live", action="store_true", help="Run a minimal live manager backend probe")
+
+    # bootstrap-brief
+    p_bootstrap = sub.add_parser("bootstrap-brief", help="Generate a first-pass brief from an existing repository")
+    p_bootstrap.add_argument("path", nargs="?", help="Repository path (default: cwd)")
+    p_bootstrap.add_argument("--force", action="store_true", help="Overwrite existing brief files")
 
     # plan
     sub.add_parser("plan", help="Generate tasks.yaml from ROADMAP.md via Claude API")
 
     # status
     sub.add_parser("status", help="Show task states and provider usage")
+
+    # runs
+    p_runs = sub.add_parser("runs", help="Show recent run ticks")
+    p_runs.add_argument("--limit", type=int, default=20, help="Number of runs to show")
+
+    # inspect
+    p_inspect = sub.add_parser("inspect", help="Inspect one task runtime, work orders, and attempts")
+    p_inspect.add_argument("task_id", help="Task id")
+
+    # retry
+    p_retry = sub.add_parser("retry", help="Force a task back into waiting_for_retry")
+    p_retry.add_argument("task_id", help="Task id")
+    p_retry.add_argument("--note", help="Optional operator note")
+
+    # tail
+    p_tail = sub.add_parser("tail", help="Tail operator log or latest report log")
+    p_tail.add_argument("--file", help="Explicit log file path")
+    p_tail.add_argument("-n", "--lines", type=int, default=40, help="Number of lines")
+    p_tail.add_argument("-f", "--follow", action="store_true", help="Follow the log")
 
     # run
     p_run = sub.add_parser("run", help="Execute one batch (one cron tick)")
@@ -382,14 +752,54 @@ def main() -> None:
     p_migrate = sub.add_parser("migrate", help="Import a legacy tasks.yaml into tasks.local.yaml")
     p_migrate.add_argument("source", help="Path to legacy YAML file with top-level tasks:")
 
+    p_pin = sub.add_parser("pin", help="Promote a task by writing an override to tasks.local.yaml")
+    p_pin.add_argument("task_id", help="Task id")
+    p_pin.add_argument("--priority", type=int, default=10, help="Priority to set")
+
+    p_disable = sub.add_parser("disable-task", help="Disable a task through tasks.local.yaml")
+    p_disable.add_argument("task_id", help="Task id")
+
+    p_prefer = sub.add_parser("prefer-worker", help="Set preferred worker for a task via tasks.local.yaml")
+    p_prefer.add_argument("task_id", help="Task id")
+    p_prefer.add_argument("worker", help="Worker name")
+
+    p_go_live = sub.add_parser("go-live", help="Apply a live config profile and optionally install a scheduler")
+    p_go_live.add_argument("--manager-backend", choices=["anthropic", "codex"], help="Manager backend to set")
+    p_go_live.add_argument("--codex", action="store_true", help="Shortcut for --manager-backend codex")
+    p_go_live.add_argument("--anthropic", action="store_true", help="Shortcut for --manager-backend anthropic")
+    p_go_live.add_argument("--default-worker", help="Default worker to set")
+    p_go_live.add_argument("--cron", help="Install/update a cron entry with the given schedule")
+    p_go_live.add_argument("--with-plan", action="store_true", help="Include auto-coder plan in installed cron")
+    p_go_live.add_argument("--systemd-interval", type=int, help="Write/install a user systemd timer in minutes")
+    p_go_live.add_argument("--write-only", action="store_true", help="Only write scheduler files; do not enable them")
+
+    p_install_cron = sub.add_parser("install-cron", help="Install/update a cron entry for auto-coder")
+    p_install_cron.add_argument("schedule", help="Cron schedule, e.g. */20 * * * *")
+    p_install_cron.add_argument("--with-plan", action="store_true", help="Also install auto-coder plan")
+
+    p_install_systemd = sub.add_parser("install-systemd", help="Write/install a user systemd timer")
+    p_install_systemd.add_argument("interval_minutes", type=int, help="Tick interval in minutes")
+    p_install_systemd.add_argument("--write-only", action="store_true", help="Only write files; do not enable timer")
+
     args = parser.parse_args()
 
     handlers = {
         "init": cmd_init,
         "doctor": cmd_doctor,
+        "bootstrap-brief": cmd_bootstrap_brief,
         "plan": cmd_plan,
         "status": cmd_status,
+        "runs": cmd_runs,
+        "inspect": cmd_inspect,
+        "retry": cmd_retry,
+        "tail": cmd_tail,
         "run": cmd_run,
         "migrate": cmd_migrate,
+        "pin": cmd_pin,
+        "disable-task": cmd_disable_task,
+        "prefer-worker": cmd_prefer_worker,
+        "go-live": cmd_go_live,
+        "install-cron": cmd_install_cron,
+        "install-systemd": cmd_install_systemd,
     }
     sys.exit(handlers[args.command](args))

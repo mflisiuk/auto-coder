@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 
 ROADMAP_REQUIRED_SECTIONS = (
@@ -24,6 +25,23 @@ PROJECT_REQUIRED_SECTIONS = (
 )
 
 AMBIGUOUS_MARKERS = ("tbd", "todo", "to decide", "later", "somehow", "maybe")
+DETERMINISTIC_COMMAND_PATTERNS = (
+    r"\bpytest\b",
+    r"\bpython(?:3)?\s+-m\s+pytest\b",
+    r"\bpython(?:3)?\s+-m\s+unittest\b",
+    r"\bpython(?:3)?\s+-m\s+compileall\b",
+    r"\buv\s+run\s+pytest\b",
+    r"\bnpm\s+test\b",
+    r"\bpnpm\s+test\b",
+    r"\byarn\s+test\b",
+    r"\bcomposer\s+test\b",
+    r"(?:^|[\s`])\.?/?.*vendor/bin/phpunit\b",
+    r"\bphpunit\b",
+    r"\bphp\s+artisan\s+test\b",
+    r"\bcargo\s+test\b",
+    r"\bgo\s+test\b",
+    r"\bmake\s+test\b",
+)
 
 
 @dataclass
@@ -141,8 +159,7 @@ def _check_commands_section(result: BriefValidationResult, project_text: str) ->
     lowered = project_text.lower()
     if "commands" not in lowered:
         return
-    command_markers = ("pytest", "unittest", "uv run", "python -m", "npm test", "pnpm test")
-    if not any(marker in lowered for marker in command_markers):
+    if not any(re.search(pattern, lowered) for pattern in DETERMINISTIC_COMMAND_PATTERNS):
         result.ambiguous_points.append("PROJECT.md::Commands has no deterministic test command")
         result.next_actions.append("Add at least one deterministic test or verification command to PROJECT.md.")
 

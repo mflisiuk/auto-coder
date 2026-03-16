@@ -13,7 +13,9 @@ from typing import Any
 
 from auto_coder.managers.anthropic import AnthropicManagerBackend
 from auto_coder.managers.codex_bridge import CodexManagerBridge
+from auto_coder.config import SUPPORTED_WORKERS
 from auto_coder.prompts.worker_instruction import build_worker_prompt
+from auto_coder.progress import write_work_progress
 from auto_coder.reviewer import review_attempt
 from auto_coder.router import ProviderRouter
 from auto_coder.storage import (
@@ -223,6 +225,19 @@ def _failure_signature(status: str, note: str = "") -> str:
     return base[:200]
 
 
+def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
+    try:
+        start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    return max(int((end - start).total_seconds()), 0)
+
+
 def _update_runtime_state(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -243,9 +258,18 @@ def _update_runtime_state(
 ) -> str:
     prev = state.get("tasks", {}).get(task_id, {})
     payload_extra = dict(extra or {})
+    timestamp = _now()
     signature = ""
     task_status = task_status or status
     attempt_status = attempt_status or status
+    if task_status == "running" and not prev.get("first_started_at"):
+        payload_extra["first_started_at"] = timestamp
+    if task_status == "completed":
+        payload_extra["completed_at"] = timestamp
+        started_at = str(prev.get("first_started_at") or payload_extra.get("first_started_at") or "")
+        duration_seconds = _elapsed_seconds(started_at, timestamp) if started_at else None
+        if duration_seconds is not None:
+            payload_extra["elapsed_seconds"] = duration_seconds
     failure_statuses = {
         "baseline_failed",
         "agent_failed",
@@ -470,18 +494,30 @@ def _prepare_work_order(
             payload.setdefault("task_id", task_id)
             payload.setdefault("sequence_no", int(existing["sequence_no"]))
             payload.setdefault("status", str(existing["status"]))
-            return payload
+            if _work_order_is_reusable(payload, task):
+                return payload
+            upsert_work_order(
+                config["state_db_path"],
+                work_order_id=str(existing["id"]),
+                task_id=task_id,
+                status="rejected",
+                sequence_no=int(existing["sequence_no"]),
+                payload={**payload, "rejected_reason": "invalid_cached_work_order"},
+            )
     history = _load_history_for_task(config, task_id)
-    work_order_count = len([entry for entry in history if entry["kind"] == "work_order"])
+    next_sequence_no = max(
+        [int(entry.get("sequence_no", 0)) for entry in history if entry["kind"] == "work_order"],
+        default=0,
+    ) + 1
     preferred_workers = list(task.get("preferred_workers") or [])
     selected_worker = preferred_workers[0] if preferred_workers else (task.get("preferred_provider") or config.get("default_worker", "cc"))
     work_order = (
         manager_backend.create_work_order(task, history, {"project_root": str(config["project_root"])})
         if manager_backend
         else {
-            "id": f"{task_id}-wo-{work_order_count + 1:02d}",
+            "id": f"{task_id}-wo-{next_sequence_no:02d}",
             "task_id": task_id,
-            "sequence_no": work_order_count + 1,
+            "sequence_no": next_sequence_no,
             "goal": task.get("prompt", ""),
             "scope_summary": task.get("title", task_id),
             "allowed_paths": list(task.get("allowed_paths") or config.get("allowed_paths", [])),
@@ -502,6 +538,21 @@ def _prepare_work_order(
             payload=work_order,
         )
     return work_order
+
+
+def _work_order_is_reusable(work_order: dict[str, Any], task: dict[str, Any]) -> bool:
+    if str(work_order.get("task_id", "")) != str(task.get("id", "")):
+        return False
+    selected_worker = str(work_order.get("selected_worker", "")).strip()
+    if selected_worker not in SUPPORTED_WORKERS:
+        return False
+    allowed_paths = work_order.get("allowed_paths")
+    completion_commands = work_order.get("completion_commands")
+    if not isinstance(allowed_paths, list) or not allowed_paths:
+        return False
+    if not isinstance(completion_commands, list) or not completion_commands:
+        return False
+    return True
 
 
 def run_one_task(
@@ -615,6 +666,7 @@ def run_one_task(
             config["test_timeout_minutes"], prefix="baseline-tests",
         )
         if not baseline_ok:
+            failed_commands = [item["command"] for item in baseline_results if not item.get("passed")]
             outcome = "baseline_failed"
             _update_runtime_state(
                 config,
@@ -625,7 +677,7 @@ def run_one_task(
                 status="baseline_failed",
                 branch=branch,
                 report_dir=report_dir,
-                note="Baseline tests failed.",
+                note=f"Baseline tests failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
                 extra={"attempt_count": attempt_count},
                 work_order_id=work_order_id,
                 work_order_status="cancelled",
@@ -707,6 +759,8 @@ def run_one_task(
         _save_json(report_dir / "changed-files.json", {"files": changed})
 
         if worker_result.returncode != 0:
+            worker_error = (worker_result.stderr or worker_result.stdout or "").strip().splitlines()
+            worker_note = worker_error[-1][:240] if worker_error else "Worker returned non-zero exit."
             outcome = "waiting_for_retry"
             _update_runtime_state(
                 config,
@@ -719,7 +773,7 @@ def run_one_task(
                 attempt_status="agent_failed",
                 branch=branch,
                 report_dir=report_dir,
-                note="Worker returned non-zero exit.",
+                note=worker_note,
                 extra={"attempt_count": attempt_count, "retry_after": _now()},
                 worker_name=provider,
                 work_order_id=work_order_id,
@@ -875,11 +929,29 @@ def run_one_task(
             return 1
 
         # ── commit / push ─────────────────────────────────────────────────────
+        progress_started_at = str(state.get("tasks", {}).get(task_id, {}).get("first_started_at") or "")
+        completion_timestamp = _now()
+        progress_duration = _elapsed_seconds(progress_started_at, completion_timestamp) if progress_started_at else None
+        write_work_progress(
+            worktree / "work_progress.md",
+            tasks_path=config["tasks_path"],
+            state_db_path=config["state_db_path"],
+            task_overrides={
+                task_id: {
+                    "status": "completed",
+                    "first_started_at": progress_started_at,
+                    "completed_at": completion_timestamp,
+                    "duration_seconds": progress_duration,
+                }
+            },
+        )
+        changed_for_commit = sorted(set(changed + ["work_progress.md"]))
         if config.get("auto_commit"):
             msg = f"chore(ai): {task.get('title', task_id)} [auto-coder]"
-            _git(worktree, "add", "--", *changed)
+            _git(worktree, "add", "--", *changed_for_commit)
             commit_r = _git(worktree, "commit", "-m", msg)
             if commit_r.returncode != 0:
+                commit_note = (commit_r.stderr or commit_r.stdout or "Git commit failed.").strip().splitlines()
                 outcome = "commit_failed"
                 _update_runtime_state(
                     config,
@@ -890,7 +962,7 @@ def run_one_task(
                     status="commit_failed",
                     branch=branch,
                     report_dir=report_dir,
-                    note="Git commit failed.",
+                    note=commit_note[-1][:240] if commit_note else "Git commit failed.",
                     extra={"attempt_count": attempt_count},
                     worker_name=provider,
                     work_order_id=work_order_id,
@@ -900,6 +972,7 @@ def run_one_task(
             if config.get("auto_push"):
                 push_r = _git(worktree, "push", "-u", "origin", branch)
                 if push_r.returncode != 0:
+                    push_note = (push_r.stderr or push_r.stdout or "Git push failed.").strip().splitlines()
                     outcome = "push_failed"
                     _update_runtime_state(
                         config,
@@ -910,7 +983,7 @@ def run_one_task(
                         status="push_failed",
                         branch=branch,
                         report_dir=report_dir,
-                        note="Git push failed.",
+                        note=push_note[-1][:240] if push_note else "Git push failed.",
                         extra={"attempt_count": attempt_count},
                         worker_name=provider,
                         work_order_id=work_order_id,
@@ -936,7 +1009,15 @@ def run_one_task(
         )
         _save_json(
             report_dir / "run.json",
-            {"run_id": run_id, "status": "completed", "work_order_id": work_order_id, "changed_files": changed, "review": review},
+            {
+                "run_id": run_id,
+                "status": "completed",
+                "work_order_id": work_order_id,
+                "changed_files": changed_for_commit,
+                "review": review,
+                "completed_at": completion_timestamp,
+                "duration_seconds": progress_duration,
+            },
         )
         return 0
 

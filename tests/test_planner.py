@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from auto_coder.config import AUTO_CODER_DIR, load_config
-from auto_coder.planner import Planner
+from auto_coder.planner import Planner, _brief_hash
 
 
 def _make_config(root: Path) -> dict:
@@ -260,6 +260,60 @@ tasks:
                 planner = Planner(config)
                 tasks = planner.generate()
             self.assertEqual(tasks[0]["preferred_workers"], ["codex"])
+
+    def test_brief_hash_ignores_tasks_local_overrides(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ROADMAP.md").write_text(VALID_ROADMAP, encoding="utf-8")
+            (root / "PROJECT.md").write_text(VALID_PROJECT, encoding="utf-8")
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir(parents=True, exist_ok=True)
+            first_hash = _brief_hash(root)
+            (acd / "tasks.local.yaml").write_text("tasks:\n  - id: custom\n", encoding="utf-8")
+            second_hash = _brief_hash(root)
+            self.assertEqual(first_hash, second_hash)
+
+    def test_stabilize_ids_rewrites_dependencies_to_stable_ids(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _make_config(root)
+            planner = Planner(config)
+            existing_tasks = [
+                {
+                    "id": "stable-a",
+                    "title": "Task A",
+                    "allowed_paths": ["src/"],
+                    "prompt": "Task A prompt",
+                },
+                {
+                    "id": "stable-b",
+                    "title": "Task B",
+                    "allowed_paths": ["src/"],
+                    "prompt": "Task B prompt",
+                },
+            ]
+            remapped = planner._stabilize_ids(
+                [
+                    {
+                        "id": "new-a",
+                        "title": "Task A",
+                        "depends_on": [],
+                        "allowed_paths": ["src/"],
+                        "prompt": "Task A prompt",
+                    },
+                    {
+                        "id": "new-b",
+                        "title": "Task B",
+                        "depends_on": ["new-a"],
+                        "allowed_paths": ["src/"],
+                        "prompt": "Task B prompt",
+                    },
+                ],
+                existing_tasks,
+            )
+            self.assertEqual(remapped[0]["id"], "stable-a")
+            self.assertEqual(remapped[1]["id"], "stable-b")
+            self.assertEqual(remapped[1]["depends_on"], ["stable-a"])
 
 
 if __name__ == "__main__":

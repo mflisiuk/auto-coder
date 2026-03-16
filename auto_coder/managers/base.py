@@ -26,6 +26,10 @@ class ManagerBackend(ABC):
     def is_available(cls) -> bool:
         raise NotImplementedError
 
+    @classmethod
+    def probe_live(cls, config: dict[str, Any]) -> str:
+        raise NotImplementedError(f"{cls.__name__} does not implement live probing")
+
     @abstractmethod
     def create_work_order(
         self,

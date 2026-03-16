@@ -94,6 +94,14 @@ class TestBriefValidator(unittest.TestCase):
             result = validate_project_brief(root)
             self.assertTrue(result.ok)
 
+    def test_accepts_phpunit_command(self):
+        project_text = VALID_PROJECT.replace("python3 -m pytest tests/", "./vendor/bin/phpunit")
+        result = validate_brief_texts(
+            roadmap_text=VALID_ROADMAP,
+            project_text=project_text,
+        )
+        self.assertTrue(result.ok)
+
 
 if __name__ == "__main__":
     unittest.main()

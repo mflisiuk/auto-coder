@@ -85,6 +85,35 @@ class TestProviderRouter(unittest.TestCase):
             self.assertIn("quota_state", summary["ccg"])
             self.assertIn("probe_source", summary["ccg"])
 
+    def test_follows_multi_hop_fallback_chain(self):
+        with TemporaryDirectory() as tmp:
+            router = _make_router(
+                tmp,
+                providers={
+                    "codex": {"token_limit_daily": 100, "quota_threshold": 0.50, "fallback": "gemini"},
+                    "gemini": {"token_limit_daily": 100, "quota_threshold": 0.50, "fallback": "cch"},
+                    "cch": {"token_limit_daily": None, "quota_threshold": 1.00, "fallback": None},
+                },
+            )
+            router.record("codex", 80)
+            router.record("gemini", 80)
+            self.assertEqual(router.pick("codex"), "cch")
+
+    def test_appends_global_fallback_worker(self):
+        with TemporaryDirectory() as tmp:
+            router = ProviderRouter(
+                {
+                    "fallback_worker": "cch",
+                    "providers": {
+                        "codex": {"token_limit_daily": 100, "quota_threshold": 0.50, "fallback": None},
+                        "cch": {"token_limit_daily": None, "quota_threshold": 1.00, "fallback": None},
+                    },
+                },
+                Path(tmp) / "usage.json",
+            )
+            router.record("codex", 80)
+            self.assertEqual(router.pick("codex"), "cch")
+
 
 if __name__ == "__main__":
     unittest.main()

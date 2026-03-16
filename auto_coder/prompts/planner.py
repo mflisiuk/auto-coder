@@ -36,6 +36,9 @@ PLANNER_USER_TEMPLATE = """\
 PROJECT CONTEXT:
 {project_context}
 
+PLANNING HINTS:
+{planning_hints}
+
 CONSTRAINTS:
 {constraints}
 
@@ -54,6 +57,7 @@ Rules:
 - Add explicit baseline_commands and completion_commands.
 - Add explicit allowed_paths for every task.
 - Add at least one acceptance criterion for every task.
+- Respect PLANNING_HINTS.md when it provides repository-specific naming, command, or pagination conventions.
 - Tasks later in the list must not depend on tasks that appear after them.
 - Output format: a YAML document with a top-level "tasks:" list.
 """

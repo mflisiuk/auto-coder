@@ -13,6 +13,9 @@ Ten katalog pokazuje minimalny poziom szczegółu, przy którym `auto-coder plan
 - `CONSTRAINTS.md`
   Twarde ograniczenia wykonawcze.
 
+- `PLANNING_HINTS.md`
+  Repo-specific hints dla planera, np. naming, paginacja, preferowane komendy.
+
 - `ARCHITECTURE_NOTES.md`
   Dodatkowe decyzje architektoniczne, które planner ma respektować.
 
