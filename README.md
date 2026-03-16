@@ -29,6 +29,7 @@ auto-coder run --dry-run
 - [Architektura v1](docs/architecture.md)
 
 ## Dokumentacja
+- **[Common pitfalls & solutions](docs/common-pitfalls.md)** ⚠️ - Read this FIRST! Critical bugs that waste hours
 - [Instalacja i konfiguracja](docs/setup.md)
 - [Jak używać](docs/usage.md)
 - [Architektura](docs/architecture.md)
