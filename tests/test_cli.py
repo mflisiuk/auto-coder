@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,9 +11,9 @@ from unittest.mock import patch
 from contextlib import redirect_stdout
 
 from auto_coder.brief_validator import BriefValidationResult
-from auto_coder.cli import cmd_bootstrap_brief, cmd_doctor, cmd_init
+from auto_coder.cli import _load_runtime_state, cmd_bootstrap_brief, cmd_doctor, cmd_init, cmd_retry
 from auto_coder.config import AUTO_CODER_DIR
-from auto_coder.storage import ensure_database
+from auto_coder.storage import ensure_database, set_task_runtime
 from auto_coder.config import load_config
 
 
@@ -117,6 +118,57 @@ class TestBootstrapBrief(unittest.TestCase):
             self.assertTrue((root / "ROADMAP.md").exists())
             self.assertTrue((root / "PROJECT.md").exists())
             self.assertTrue((root / "PLANNING_HINTS.md").exists())
+
+
+class TestCliStateSync(unittest.TestCase):
+    def test_load_runtime_state_prefers_sqlite_and_writes_state_json(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir(parents=True, exist_ok=True)
+            ensure_database(acd / "state.db")
+            config = load_config(root)
+            config["state_path"].write_text(
+                json.dumps({"tasks": {"task-1": {"status": "waiting_for_quota"}}}),
+                encoding="utf-8",
+            )
+            set_task_runtime(
+                config["state_db_path"],
+                task_id="task-1",
+                title="Task 1",
+                priority=10,
+                status="waiting_for_retry",
+                payload={"attempt_count": 3},
+            )
+
+            state = _load_runtime_state(config)
+
+            self.assertEqual(state["tasks"]["task-1"]["status"], "waiting_for_retry")
+            persisted = json.loads(config["state_path"].read_text(encoding="utf-8"))
+            self.assertEqual(persisted["tasks"]["task-1"]["status"], "waiting_for_retry")
+
+    def test_retry_updates_state_json_from_sqlite(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir(parents=True, exist_ok=True)
+            ensure_database(acd / "state.db")
+            config = load_config(root)
+            set_task_runtime(
+                config["state_db_path"],
+                task_id="task-1",
+                title="Task 1",
+                priority=10,
+                status="waiting_for_quota",
+                payload={"retry_after": "2099-01-01T00:00:00+00:00"},
+            )
+            with patch("auto_coder.cli.find_project_root", return_value=root), \
+                 patch("auto_coder.cli.load_config", return_value=config):
+                exit_code = cmd_retry(argparse.Namespace(task_id="task-1", note="retry now"))
+
+            self.assertEqual(exit_code, 0)
+            persisted = json.loads(config["state_path"].read_text(encoding="utf-8"))
+            self.assertEqual(persisted["tasks"]["task-1"]["status"], "waiting_for_retry")
 
 
 if __name__ == "__main__":
