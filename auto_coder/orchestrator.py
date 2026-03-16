@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from auto_coder.router import ProviderRouter
 from auto_coder.storage import (
     acquire_lease,
     create_run_tick,
+    get_task_runtime,
     latest_work_order_for_task,
     list_attempts_for_task,
     list_work_orders_for_task,
@@ -236,6 +238,12 @@ def _failure_signature(status: str, note: str = "") -> str:
     return base[:200]
 
 
+def _hash_signature(prefix: str, parts: list[str]) -> str:
+    raw = " | ".join(part.strip() for part in parts if part and part.strip())
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}:{digest}"
+
+
 def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
     try:
         start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
@@ -247,6 +255,144 @@ def _elapsed_seconds(started_at: str, ended_at: str) -> int | None:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
     return max(int((end - start).total_seconds()), 0)
+
+
+def _extract_test_identifiers(text: str) -> list[str]:
+    seen: set[str] = set()
+    identifiers: list[str] = []
+    for match in re.findall(r"([A-Za-z0-9_\\\\]+::[A-Za-z0-9_]+)", text):
+        if match in seen:
+            continue
+        seen.add(match)
+        identifiers.append(match)
+    return identifiers
+
+
+def _summarize_test_failures(report_dir: Path, prefix: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    commands: list[str] = []
+    identifiers: list[str] = []
+    excerpts: list[str] = []
+
+    for result in results:
+        if result.get("passed"):
+            continue
+        commands.append(str(result.get("command", "")))
+        index = int(result.get("index", 0))
+        stdout = _read(report_dir / prefix / f"test-{index:02d}.stdout.log")
+        stderr = _read(report_dir / prefix / f"test-{index:02d}.stderr.log")
+        combined = "\n".join(part for part in (stdout, stderr) if part)
+        for identifier in _extract_test_identifiers(combined):
+            if identifier not in identifiers:
+                identifiers.append(identifier)
+        interesting_lines = []
+        for line in combined.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if "::" in stripped or "FAIL" in stripped or "ERROR" in stripped or "Exception" in stripped:
+                interesting_lines.append(stripped)
+            if len(interesting_lines) >= 4:
+                break
+        if not interesting_lines and combined.strip():
+            interesting_lines.append(combined.strip().splitlines()[-1][:180])
+        excerpts.extend(interesting_lines[:4])
+
+    note_parts: list[str] = []
+    if commands:
+        note_parts.append(f"commands={', '.join(commands[:2])}")
+    if identifiers:
+        note_parts.append(f"failures={', '.join(identifiers[:3])}")
+    if excerpts:
+        note_parts.append(f"excerpt={excerpts[0][:120]}")
+    note = "; ".join(note_parts) or "baseline test failure"
+    signature = _hash_signature("baseline_failed", commands + identifiers + excerpts[:3])
+    return {
+        "commands": commands,
+        "identifiers": identifiers,
+        "excerpts": excerpts[:6],
+        "note": note,
+        "signature": signature,
+    }
+
+
+def _repair_task_id(task_id: str) -> str:
+    return f"repair-baseline::{task_id}"
+
+
+def _is_repair_task(task_id: str) -> bool:
+    return task_id.startswith("repair-baseline::")
+
+
+def _queue_baseline_repair_task(
+    config: dict[str, Any],
+    task: dict[str, Any],
+    *,
+    task_id: str,
+    failure_summary: dict[str, Any],
+    parent_run_id: str,
+) -> str | None:
+    if not config.get("state_db_path") or not config.get("auto_create_baseline_repair_tasks", True):
+        return None
+    if _is_repair_task(task_id):
+        return None
+
+    repair_task_id = _repair_task_id(task_id)
+    existing = get_task_runtime(config["state_db_path"], repair_task_id)
+    if existing is not None and str(existing["status"]) not in {"completed", "quarantined", "blocked", "abandoned"}:
+        return repair_task_id
+
+    base_dependencies = list(task.get("depends_on", [])) + list(task.get("runtime_depends_on", []))
+    repair_task = {
+        "id": repair_task_id,
+        "title": f"Repair baseline for {task.get('title', task_id)}",
+        "description": (
+            "Automatically generated unblocker task. Fix the failing baseline and do not implement "
+            "the parent feature beyond what is required to make baseline commands pass."
+        ),
+        "priority": max(int(task.get("priority", 100)) - 1, 0),
+        "enabled": True,
+        "depends_on": base_dependencies,
+        "allowed_paths": list(task.get("allowed_paths", [])),
+        "protected_paths": list(task.get("protected_paths", [])),
+        "setup_commands": list(task.get("setup_commands", [])),
+        "baseline_commands": list(_baseline_commands(task)),
+        "completion_commands": list(_baseline_commands(task)),
+        "acceptance_criteria": [
+            "Baseline commands pass in a fresh worktree.",
+            f"Unblocks parent task {task_id}.",
+        ],
+        "preferred_workers": list(task.get("preferred_workers", [])),
+        "risk_level": str(task.get("risk_level", "normal")),
+        "max_attempts_total": max(2, int(task.get("max_attempts_total", 6))),
+        "cooldown_minutes": int(task.get("cooldown_minutes", 60)),
+        "estimated_effort": "small",
+        "allow_no_changes": True,
+        "report_only": False,
+        "auto_generated": True,
+        "repair_kind": "baseline",
+        "repair_target_task_id": task_id,
+        "repair_source_run_id": parent_run_id,
+        "repair_failure_signature": str(failure_summary.get("signature", "")),
+        "repair_failure_identifiers": list(failure_summary.get("identifiers", [])),
+        "repair_failure_commands": list(failure_summary.get("commands", [])),
+        "repair_failure_excerpts": list(failure_summary.get("excerpts", [])),
+        "prompt": (
+            f"Repair the failing baseline for parent task `{task_id}`.\n"
+            f"Failure signature: {failure_summary.get('signature', '')}\n"
+            f"Failing tests: {', '.join(failure_summary.get('identifiers', [])[:5]) or 'unknown'}\n"
+            f"Failing commands: {', '.join(failure_summary.get('commands', [])[:2]) or 'unknown'}\n"
+            "Goal: make baseline commands pass in a fresh worktree. Do not implement unrelated feature work."
+        ),
+    }
+    set_task_runtime(
+        config["state_db_path"],
+        task_id=repair_task_id,
+        title=str(repair_task["title"]),
+        priority=int(repair_task["priority"]),
+        status="ready",
+        payload=repair_task,
+    )
+    return repair_task_id
 
 
 def _update_runtime_state(
@@ -714,19 +860,44 @@ def run_one_task(
                 config["test_timeout_minutes"], prefix="setup-tests",
             )
             if not setup_ok:
-                failed_commands = [item["command"] for item in setup_results if not item.get("passed")]
+                failure_summary = _summarize_test_failures(report_dir, "setup-tests", setup_results)
+                repair_task_id = _queue_baseline_repair_task(
+                    config,
+                    task,
+                    task_id=task_id,
+                    failure_summary=failure_summary,
+                    parent_run_id=run_id,
+                )
                 outcome = "baseline_failed"
+                task_status = "baseline_failed"
+                note = f"Setup commands failed: {failure_summary['note']}"
+                extra = {
+                    "attempt_count": attempt_count,
+                    "baseline_failure_signature": failure_summary["signature"],
+                    "baseline_failure_identifiers": failure_summary["identifiers"],
+                    "baseline_failure_commands": failure_summary["commands"],
+                    "baseline_failure_excerpts": failure_summary["excerpts"],
+                }
+                if repair_task_id:
+                    task_status = "waiting_for_dependency"
+                    note = f"{note}. Queued repair task {repair_task_id}."
+                    extra["repair_task_id"] = repair_task_id
+                    extra["runtime_depends_on"] = list(dict.fromkeys(list(task.get("runtime_depends_on", [])) + [repair_task_id]))
+                elif config.get("auto_quarantine_failures", True):
+                    task_status = "quarantined"
                 _update_runtime_state(
                     config,
                     state,
                     task,
                     task_id=task_id,
                     run_id=run_id,
-                    status="baseline_failed",
+                    status=task_status,
+                    task_status=task_status,
+                    attempt_status="baseline_failed",
                     branch=branch,
                     report_dir=report_dir,
-                    note=f"Setup commands failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
-                    extra={"attempt_count": attempt_count},
+                    note=note,
+                    extra=extra,
                     work_order_id=work_order_id,
                     work_order_status="cancelled",
                 )
@@ -734,9 +905,11 @@ def run_one_task(
                     report_dir / "run.json",
                     {
                         "run_id": run_id,
-                        "status": "baseline_failed",
+                        "status": task_status,
                         "work_order_id": work_order_id,
                         "setup_tests": setup_results,
+                        "failure_summary": failure_summary,
+                        "repair_task_id": repair_task_id,
                     },
                 )
                 return 1
@@ -747,25 +920,57 @@ def run_one_task(
             config["test_timeout_minutes"], prefix="baseline-tests",
         )
         if not baseline_ok:
-            failed_commands = [item["command"] for item in baseline_results if not item.get("passed")]
+            failure_summary = _summarize_test_failures(report_dir, "baseline-tests", baseline_results)
+            repair_task_id = _queue_baseline_repair_task(
+                config,
+                task,
+                task_id=task_id,
+                failure_summary=failure_summary,
+                parent_run_id=run_id,
+            )
             outcome = "baseline_failed"
+            task_status = "baseline_failed"
+            note = f"Baseline tests failed: {failure_summary['note']}"
+            extra = {
+                "attempt_count": attempt_count,
+                "baseline_failure_signature": failure_summary["signature"],
+                "baseline_failure_identifiers": failure_summary["identifiers"],
+                "baseline_failure_commands": failure_summary["commands"],
+                "baseline_failure_excerpts": failure_summary["excerpts"],
+            }
+            if repair_task_id:
+                task_status = "waiting_for_dependency"
+                note = f"{note}. Queued repair task {repair_task_id}."
+                extra["repair_task_id"] = repair_task_id
+                extra["runtime_depends_on"] = list(dict.fromkeys(list(task.get("runtime_depends_on", [])) + [repair_task_id]))
+            elif config.get("auto_quarantine_failures", True):
+                task_status = "quarantined"
             _update_runtime_state(
                 config,
                 state,
                 task,
                 task_id=task_id,
                 run_id=run_id,
-                status="baseline_failed",
+                status=task_status,
+                task_status=task_status,
+                attempt_status="baseline_failed",
                 branch=branch,
                 report_dir=report_dir,
-                note=f"Baseline tests failed: {', '.join(failed_commands[:2]) or 'unknown command'}",
-                extra={"attempt_count": attempt_count},
+                note=note,
+                extra=extra,
                 work_order_id=work_order_id,
                 work_order_status="cancelled",
             )
             _save_json(
                 report_dir / "run.json",
-                {"run_id": run_id, "status": "baseline_failed", "work_order_id": work_order_id, "baseline_tests": baseline_results},
+                {
+                    "run_id": run_id,
+                    "status": task_status,
+                    "work_order_id": work_order_id,
+                    "baseline_tests": baseline_results,
+                    "failure_summary": failure_summary,
+                    "repair_task_id": repair_task_id,
+                },
             )
             return 1
         _reset_tracked_changes(worktree)

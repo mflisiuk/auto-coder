@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 from auto_coder.storage import (
     ensure_database,
+    expire_stale_leases,
     export_state,
     force_task_retry,
     get_task_runtime,
@@ -169,6 +170,29 @@ class TestStorage(unittest.TestCase):
                     retry_after="2026-03-16T12:00:00+00:00",
                 )
             )
+            reacquired = acquire_lease(
+                db_path,
+                resource_type="task",
+                resource_id="task-1",
+                run_tick_id="run-2",
+                expires_at="2099-01-01T00:00:00+00:00",
+            )
+            self.assertTrue(reacquired)
+
+    def test_expire_stale_leases_recognizes_iso_timestamps(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.db"
+            ensure_database(db_path)
+            acquired = acquire_lease(
+                db_path,
+                resource_type="task",
+                resource_id="task-1",
+                run_tick_id="run-1",
+                expires_at="2000-01-01T00:00:00+00:00",
+            )
+            self.assertTrue(acquired)
+            expired = expire_stale_leases(db_path)
+            self.assertEqual(len(expired), 1)
             reacquired = acquire_lease(
                 db_path,
                 resource_type="task",

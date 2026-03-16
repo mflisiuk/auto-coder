@@ -85,6 +85,32 @@ class TestSelectTask(unittest.TestCase):
         task = select_task(self._tasks(), state)
         self.assertIsNone(task)
 
+    def test_skips_quarantined(self):
+        state = {"tasks": {"task-a": {"status": "quarantined"}}, "runs": []}
+        task = select_task(self._tasks(), state)
+        self.assertEqual(task["id"], "task-b")
+
+    def test_waiting_for_dependency_uses_runtime_depends_on(self):
+        tasks = [
+            {
+                "id": "task-a",
+                "mode": "safe",
+                "enabled": True,
+                "priority": 10,
+                "runtime_depends_on": ["repair-baseline::task-a"],
+            },
+            {"id": "task-b", "mode": "safe", "enabled": True, "priority": 20},
+        ]
+        state = {
+            "tasks": {
+                "task-a": {"status": "waiting_for_dependency"},
+                "repair-baseline::task-a": {"status": "ready"},
+            },
+            "runs": [],
+        }
+        task = select_task(tasks, state)
+        self.assertEqual(task["id"], "task-b")
+
 
 class TestShouldRetry(unittest.TestCase):
     def test_retryable_statuses(self):
@@ -201,6 +227,34 @@ class TestRunBatch(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertEqual(attempt["n"], 1)
+
+    def test_continues_to_next_task_when_first_is_waiting_for_dependency(self):
+        with TemporaryDirectory() as tmp:
+            config = self._make_config(tmp)
+            config["max_tasks_per_run"] = 2
+            tasks = [
+                {"id": "t1", "mode": "safe", "enabled": True, "priority": 1},
+                {"id": "t2", "mode": "safe", "enabled": True, "priority": 2},
+            ]
+            state: dict = {"tasks": {}, "runs": []}
+            calls = []
+
+            def fake_run(_config, task, shared_state):
+                calls.append(task["id"])
+                shared_state.setdefault("tasks", {}).setdefault(task["id"], {})
+                if task["id"] == "t1":
+                    shared_state["tasks"]["t1"]["status"] = "waiting_for_dependency"
+                    shared_state["tasks"]["t1"]["runtime_depends_on"] = ["repair-baseline::t1"]
+                    shared_state.setdefault("tasks", {})["repair-baseline::t1"] = {"status": "ready"}
+                    return 1
+                shared_state["tasks"]["t2"] = {"status": "completed"}
+                return 0
+
+            with patch("auto_coder.orchestrator.run_one_task", side_effect=fake_run):
+                exit_code = run_batch(config, tasks, state)
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(calls, ["t1", "t2"])
 
 
 if __name__ == "__main__":

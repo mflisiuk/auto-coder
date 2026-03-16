@@ -28,7 +28,8 @@ def should_retry(status: str | None) -> bool:
 
 def dependencies_satisfied(task: dict[str, Any], state: dict[str, Any]) -> bool:
     task_state = state.get("tasks", {})
-    for dependency in task.get("depends_on", []):
+    dependencies = list(task.get("depends_on", [])) + list(task.get("runtime_depends_on", []))
+    for dependency in dependencies:
         if task_state.get(dependency, {}).get("status") != "completed":
             return False
     return True
@@ -46,7 +47,7 @@ def select_task(tasks: list[dict[str, Any]], state: dict[str, Any]) -> dict[str,
         if not task_id:
             continue
         task_status = task_state.get(task_id, {})
-        if task_status.get("status") in {"completed", "blocked", "running", "leased"}:
+        if task_status.get("status") in {"completed", "blocked", "quarantined", "running", "leased"}:
             continue
         if not dependencies_satisfied(task, state):
             continue

@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -115,6 +116,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
 """
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def ensure_database(db_path: Path) -> Path:
     """Create the SQLite database and schema if it does not exist."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +221,25 @@ def list_task_runtime(db_path: Path) -> list[sqlite3.Row]:
             "SELECT id, title, status, priority, payload_json, updated_at FROM tasks ORDER BY priority, id"
         ).fetchall()
     return rows
+
+
+def list_task_specs(db_path: Path) -> list[dict]:
+    """Return task payloads from SQLite ordered like the scheduler sees them."""
+    specs: list[dict] = []
+    for row in list_task_runtime(db_path):
+        try:
+            payload = json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("id", str(row["id"]))
+        payload.setdefault("title", str(row["title"]))
+        payload.setdefault("priority", int(row["priority"]))
+        payload.setdefault("enabled", True)
+        payload["status"] = str(row["status"])
+        specs.append(payload)
+    return specs
 
 
 def get_task_runtime(db_path: Path, task_id: str) -> sqlite3.Row | None:
@@ -509,10 +533,11 @@ def acquire_lease(
 ) -> bool:
     ensure_database(db_path)
     now_expr = "CURRENT_TIMESTAMP"
+    now_iso = _now_iso()
     with connect(db_path) as conn:
         conn.execute(
-            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')",
-            (resource_type, resource_id),
+            "DELETE FROM leases WHERE resource_type = ? AND resource_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+            (resource_type, resource_id, now_iso),
         )
         existing = conn.execute(
             "SELECT id FROM leases WHERE resource_type = ? AND resource_id = ?",
@@ -677,15 +702,17 @@ def latest_quota_snapshots(db_path: Path) -> list[sqlite3.Row]:
 def expire_stale_leases(db_path: Path) -> list[sqlite3.Row]:
     if not db_path.exists():
         return []
+    now_iso = _now_iso()
     with connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT id, resource_type, resource_id, run_tick_id, expires_at
             FROM leases
-            WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')
-            """
+            WHERE expires_at IS NOT NULL AND expires_at <= ?
+            """,
+            (now_iso,),
         ).fetchall()
-        conn.execute("DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')")
+        conn.execute("DELETE FROM leases WHERE expires_at IS NOT NULL AND expires_at <= ?", (now_iso,))
         conn.commit()
     return rows
 

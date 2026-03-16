@@ -11,7 +11,7 @@ from unittest.mock import patch
 from contextlib import redirect_stdout
 
 from auto_coder.brief_validator import BriefValidationResult
-from auto_coder.cli import _load_runtime_state, cmd_bootstrap_brief, cmd_doctor, cmd_init, cmd_retry
+from auto_coder.cli import _load_runtime_state, _load_task_specs, cmd_bootstrap_brief, cmd_doctor, cmd_init, cmd_retry
 from auto_coder.config import AUTO_CODER_DIR
 from auto_coder.storage import ensure_database, set_task_runtime
 from auto_coder.config import load_config
@@ -169,6 +169,39 @@ class TestCliStateSync(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             persisted = json.loads(config["state_path"].read_text(encoding="utf-8"))
             self.assertEqual(persisted["tasks"]["task-1"]["status"], "waiting_for_retry")
+
+    def test_load_task_specs_includes_runtime_only_tasks(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acd = root / AUTO_CODER_DIR
+            acd.mkdir(parents=True, exist_ok=True)
+            ensure_database(acd / "state.db")
+            config = load_config(root)
+            set_task_runtime(
+                config["state_db_path"],
+                task_id="task-1",
+                title="Task 1",
+                priority=10,
+                status="ready",
+                payload={"id": "task-1", "title": "Task 1", "priority": 10, "allowed_paths": ["src/"]},
+            )
+            set_task_runtime(
+                config["state_db_path"],
+                task_id="repair-baseline::task-1",
+                title="Repair task",
+                priority=9,
+                status="ready",
+                payload={
+                    "id": "repair-baseline::task-1",
+                    "title": "Repair task",
+                    "priority": 9,
+                    "allowed_paths": ["src/"],
+                    "auto_generated": True,
+                },
+            )
+
+            tasks = _load_task_specs(config, [{"id": "task-1", "title": "Task 1"}])
+            self.assertEqual({task["id"] for task in tasks}, {"task-1", "repair-baseline::task-1"})
 
 
 if __name__ == "__main__":

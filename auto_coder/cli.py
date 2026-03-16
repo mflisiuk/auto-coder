@@ -37,6 +37,7 @@ from auto_coder.storage import (
     list_run_ticks,
     list_tables,
     list_task_runtime,
+    list_task_specs,
     list_work_orders_for_task,
     sync_tasks,
 )
@@ -57,6 +58,15 @@ def _load_runtime_state(config: dict[str, Any]) -> dict[str, Any]:
         state = export_state(config["state_db_path"])
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return state
+
+
+def _load_task_specs(config: dict[str, Any], yaml_tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not config["state_db_path"].exists():
+        return list(yaml_tasks)
+    specs = list_task_specs(config["state_db_path"])
+    if specs:
+        return specs
+    return list(yaml_tasks)
 
 def _probe_manager_backend(config: dict[str, Any]) -> str:
     backend = str(config.get("manager_backend", "anthropic")).strip().lower()
@@ -377,11 +387,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
-    tasks = list(raw.get("tasks", []))
-    if not tasks:
+    yaml_tasks = list(raw.get("tasks", []))
+    if not yaml_tasks:
         print("tasks.yaml has no tasks.")
         return 0
-    sync_tasks(config["state_db_path"], tasks)
+    sync_tasks(config["state_db_path"], yaml_tasks)
+    tasks = _load_task_specs(config, yaml_tasks)
 
     state = _load_runtime_state(config)
 
