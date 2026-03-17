@@ -32,11 +32,12 @@ def dependencies_satisfied(task: dict[str, Any], state: dict[str, Any]) -> bool:
     for dep in task.get("depends_on", []):
         if task_state.get(dep, {}).get("status") != "completed":
             return False
-    # Runtime dependencies (auto-generated repair tasks): quarantined or abandoned
-    # counts as resolved — the repair gave up, so the parent should proceed.
+    # Runtime dependencies (auto-generated repair tasks): quarantined, abandoned,
+    # or missing from state counts as resolved — the repair gave up or was never
+    # recorded, so the parent should proceed.
     for dep in task.get("runtime_depends_on", []):
         status = task_state.get(dep, {}).get("status")
-        if status not in {"completed", "quarantined", "abandoned"}:
+        if status is not None and status not in {"completed", "quarantined", "abandoned"}:
             return False
     return True
 

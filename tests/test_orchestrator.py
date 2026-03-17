@@ -133,6 +133,25 @@ class TestSelectTask(unittest.TestCase):
         task = select_task(tasks, state)
         self.assertEqual(task["id"], "task-a")
 
+    def test_missing_repair_task_unblocks_parent(self):
+        # If the runtime dep doesn't exist in state at all (e.g. was pruned),
+        # the parent should not be blocked.
+        tasks = [
+            {
+                "id": "task-a",
+                "mode": "safe",
+                "enabled": True,
+                "priority": 10,
+                "runtime_depends_on": ["repair-baseline::task-a"],
+            },
+        ]
+        state = {
+            "tasks": {"task-a": {"status": "ready"}},
+            "runs": [],
+        }
+        task = select_task(tasks, state)
+        self.assertEqual(task["id"], "task-a")
+
     def test_abandoned_repair_task_unblocks_parent(self):
         tasks = [
             {
