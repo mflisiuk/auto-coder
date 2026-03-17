@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-03-17] - PATH Augmentation for Cron/Minimal Environments
+### Co się zmieniło
+- **Rozszerzono `CcManagerBridge.is_available()`** w `cc_bridge.py` o sprawdzanie common install locations (`~/.nvm/versions/node/v22.22.0/bin/claude`, `~/.local/bin/claude`, `/usr/local/bin/claude`) — działa w cron środowiskach bez sourcing ~/.bashrc
+- **Dodano augmentację PATH** w `worker.py` — workerzy (ccg, cc) są odnajdywani nawet w minimalnych środowiskach cron
+- **Zaktualizowano `bridges/cc-manager/src/index.mjs`** o augmentację PATH z common install locations — spójne zachowanie w Node.js bridge
+
+### Poprawki błędów
+- Naprawiono niewykrywalność Claude Code w cron/minimal environments gdzie PATH nie zawiera ~/.nvm/versions/node/v22.22.0/bin
+- Naprawiono failure workerów ccg/cc uruchamianych przez cron — teraz PATH jest poprawnie ustawiane przed spawnem subprocessów
+
 ## [2026-03-17] - CC/Claude Backend Support in Probe Dispatch
 ### Co się zmieniło
 - **Rozszerzono `_probe_manager_backend`** w `cli.py` o obsługę backendów `cc` i `claude` — teraz `doctor --probe-live` poprawnie sprawdza dostępność Claude Code jako managera
