@@ -1645,6 +1645,9 @@ def run_one_task(
                     _git(project_root, "merge", "--no-ff", f"origin/{branch}",
                          "-m", f"chore(ai): {task.get('title', task_id)} [auto-coder]")
                     _git(project_root, "push", "origin", base_branch)
+                    # Delete the feature branch after successful merge.
+                    _git(project_root, "push", "origin", "--delete", branch)
+                    _git(project_root, "branch", "-d", branch)
 
         outcome = "completed"
         _update_runtime_state(
