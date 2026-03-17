@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-03-17] - Wildcard Support in Allowed Paths
+### Co się zmieniło
+- **Dodano obsługę wildcardów** w `policy.py` — `**` lub `*` w `allowed_paths` zezwala na wszystkie ścieżki bez sprawdzania prefiksów
+
+### Poprawki błędów
+- Naprawiono konieczność ręcznego dodawania każdego prefiksu — teraz jeden `**` wystarcza dla wszystkich ścieżek
+
 ## [2026-03-17] - Baseline Validation & Branch Cleanup
 ### Co się zmieniło
 - **Dodano `validate_baseline_spec()`** w `policy.py` — ostrzeżenia gdy komendy baseline odnoszą się do plików, które task ma dopiero utworzyć
