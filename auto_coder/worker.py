@@ -70,6 +70,14 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(cwd)
+    # Augment PATH so workers (claude, ccg) are found in cron/minimal environments.
+    home = os.path.expanduser("~")
+    extra = ":".join([
+        f"{home}/.nvm/versions/node/v22.22.0/bin",
+        f"{home}/.local/bin",
+        "/usr/local/bin",
+    ])
+    env["PATH"] = f"{extra}:{env.get('PATH', '/usr/bin:/bin')}"
     return subprocess.run(
         cmd,
         cwd=str(cwd),

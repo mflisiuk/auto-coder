@@ -67,6 +67,15 @@ ${JSON.stringify(schema, null, 2)}`;
   const env = { ...process.env };
   delete env.CLAUDECODE;
 
+  // Augment PATH with common install locations so the bridge works in cron
+  // environments that don't source ~/.bashrc / ~/.nvm/nvm.sh.
+  const extraPaths = [
+    `${env.HOME}/.nvm/versions/node/v22.22.0/bin`,
+    `${env.HOME}/.local/bin`,
+    "/usr/local/bin",
+  ].filter(Boolean).join(":");
+  env.PATH = `${extraPaths}:${env.PATH || "/usr/bin:/bin"}`;
+
   const child = spawn("claude", args, {
     cwd: payload.cwd || process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],

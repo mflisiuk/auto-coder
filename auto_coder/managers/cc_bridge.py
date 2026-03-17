@@ -30,7 +30,16 @@ class CcManagerBridge(ManagerBackend):
 
     @classmethod
     def is_available(cls) -> bool:
-        return shutil.which("claude") is not None
+        # shutil.which respects PATH; also check common install locations
+        # that may be missing in cron/minimal environments.
+        if shutil.which("claude") is not None:
+            return True
+        common = [
+            Path.home() / ".nvm" / "versions" / "node" / "v22.22.0" / "bin" / "claude",
+            Path.home() / ".local" / "bin" / "claude",
+            Path("/usr/local/bin/claude"),
+        ]
+        return any(p.exists() for p in common)
 
     @classmethod
     def probe_live(cls, config: dict[str, Any]) -> str:
