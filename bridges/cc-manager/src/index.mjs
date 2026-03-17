@@ -106,9 +106,17 @@ ${JSON.stringify(schema, null, 2)}`;
     throw new Error(`cc bridge output missing 'result' field. parsed=${JSON.stringify(parsed)}`);
   }
 
+  // Claude sometimes wraps its JSON in markdown code fences despite instructions not to.
+  // Strip them before parsing.
+  let resultText = parsed.result.trim();
+  const fenceMatch = resultText.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fenceMatch) {
+    resultText = fenceMatch[1].trim();
+  }
+
   let lastMessage;
   try {
-    lastMessage = JSON.parse(parsed.result);
+    lastMessage = JSON.parse(resultText);
   } catch {
     throw new Error(`cc bridge result is not valid JSON. result=${parsed.result}`);
   }
@@ -161,7 +169,7 @@ Rules:
 - keep the work order small and executable in one tick
 - keep allowed_paths inside the task contract
 - preserve completion_commands unless you have a strong reason to narrow them
-- selected_worker should be one of the task preferred workers when possible
+- selected_worker: use "${payload.default_worker || "ccg"}" unless task specifies preferred_workers
 - manager_feedback should be concise and actionable`;
 }
 

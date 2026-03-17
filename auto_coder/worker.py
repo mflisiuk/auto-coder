@@ -1,6 +1,7 @@
 """Spawn coding agent subprocesses (cc, cch, ccg, codex, ...)."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -105,7 +106,30 @@ def extract_token_usage(stdout: str) -> int:
 
 def is_quota_error(stderr: str, stdout: str, *, returncode: int | None = None) -> bool:
     """Detect genuine quota/rate-limit failures from agent output."""
+    # Claude Code (cc/cch) exits with code 0 but sets is_error:true in JSON
+    # when the subscription limit is hit — check that case first.
     if returncode == 0:
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                continue
+            if parsed.get("is_error") and parsed.get("result"):
+                result_text = str(parsed["result"]).lower()
+                quota_phrases = (
+                    "hit your limit",
+                    "usage limit",
+                    "resets",
+                    "rate limit",
+                    "too many requests",
+                    "quota",
+                    "overloaded",
+                )
+                if any(phrase in result_text for phrase in quota_phrases):
+                    return True
         return False
 
     text = f"{stderr}\n{stdout}".lower()

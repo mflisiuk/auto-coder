@@ -1033,7 +1033,12 @@ def run_one_task(
     manager_backend = _resolve_manager_backend(config, task)
     work_order = _prepare_work_order(config, task, manager_backend)
     work_order_id = str(work_order["id"])
-    allowed_paths = list(work_order.get("allowed_paths") or task.get("allowed_paths") or config.get("allowed_paths", []))
+    # Always use the union of task-level and work_order-level allowed_paths.
+    # A manager work_order can focus on a subset but must never silently
+    # block files that the task contract already permits.
+    _task_paths = list(task.get("allowed_paths") or config.get("allowed_paths", []))
+    _wo_paths = list(work_order.get("allowed_paths") or [])
+    allowed_paths = list(dict.fromkeys(_task_paths + _wo_paths))  # union, preserving order
     prompt = build_worker_prompt(
         task=task,
         work_order=work_order,
@@ -1616,6 +1621,14 @@ def run_one_task(
                                 text=True,
                                 check=False,
                             )
+                elif config.get("auto_merge") and not config.get("auto_pr"):
+                    # No PR workflow: merge the feature branch directly into base_branch.
+                    base_branch = str(config.get("base_branch", "main"))
+                    _git(project_root, "fetch", "origin", branch)
+                    _git(project_root, "checkout", base_branch)
+                    _git(project_root, "merge", "--no-ff", f"origin/{branch}",
+                         "-m", f"chore(ai): {task.get('title', task_id)} [auto-coder]")
+                    _git(project_root, "push", "origin", base_branch)
 
         outcome = "completed"
         _update_runtime_state(

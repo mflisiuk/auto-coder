@@ -61,6 +61,7 @@ class CcManagerBridge(ManagerBackend):
                 "repo_context": repo_context or {},
                 "cwd": str((repo_context or {}).get("project_root") or self.config["project_root"]),
                 "model": self.config.get("manager_model"),
+                "default_worker": self.config.get("default_worker", "ccg"),
                 "thread_id": self._thread_id or None,
             },
         )

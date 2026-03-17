@@ -823,6 +823,11 @@ def recover_interrupted_runs(db_path: Path) -> dict[str, list[str]]:
                 stale_work_order_ids.append(str(work_order_id))
 
         if stale_run_ids:
+            # Release leases held by interrupted runs so the next run can acquire them.
+            conn.executemany(
+                "DELETE FROM leases WHERE run_tick_id = ?",
+                [(run_id,) for run_id in stale_run_ids],
+            )
             conn.executemany(
                 """
                 UPDATE run_ticks
