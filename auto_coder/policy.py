@@ -15,6 +15,9 @@ def _normalize_prefix(prefix: str) -> str:
 
 
 def path_under(path: str, prefixes: list[str]) -> bool:
+    # Wildcard "**" or "*" in allowed_paths means all paths are permitted.
+    if any(p.strip() in {"**", "*"} for p in prefixes):
+        return True
     norm = path.replace("\\", "/").lstrip("./").rstrip("/")
     for prefix in prefixes:
         item = _normalize_prefix(prefix)
