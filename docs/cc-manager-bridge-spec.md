@@ -24,6 +24,7 @@ CC-Manager Bridge to moduł integrujący **Claude Code** jako backend menedżera
 1. **Bridge Layer** — tłumaczy kontrakty auto-coder na komendy Claude Code
 2. **Stdin Handler** — zamyka stdin aby zapobiec zawieszaniu procesu
 3. **Output Parser** — parsuje output Claude Code do struktury zadań
+4. **Probe Integration** — obsługa `doctor --probe-live` dla backendów `cc` i `claude`
 
 ## Konfiguracja
 
@@ -49,6 +50,9 @@ Darmowy tier z limitami kwot. Przy 429 system czeka w `waiting_for_quota`.
 ### CCH (Claude Code - paid)
 Płatny tier z wyższymi limitami, używany jako fallback.
 
+### Claude (alias)
+Alias `claude` jest równoważny z `cc` i mapuje na ten sam backend.
+
 ## Fallback Chain
 
 Gdy domyślny worker zwróci błąd kwotowy (429), auto-coder automatycznie przechodzi przez łańcuch:
@@ -72,7 +76,7 @@ auto-coder doctor --probe-live
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Wygeneruj backlog
-auto-cader plan
+auto-coder plan
 
 # Uruchom z cc-manager
 auto-coder run --manager=cc

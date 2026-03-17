@@ -1,111 +1,137 @@
-# Jak używać auto-coder
+# Jak używać
 
-Ten dokument opisuje typowe przypadki użycia `auto-coder` dla użytkowników końcowych.
+## Przegląd workflow
 
-## Przypadek 1: Pierwsze uruchomienie w nowym repozytorium
+```
+1. init → 2. plan → 3. run --dry-run → 4. run --live
+```
+
+## Krok 1: Inicjalizacja
 
 ```bash
-# 1. Przejdź do repozytorium
-cd /path/to/your-project
-
-# 2. Zainicjalizuj auto-coder
+cd /path/to/your-repo
 auto-coder init
+```
 
-# 3. Sprawdź konfigurację i dostępność providerów
-auto-coder doctor --probe-live
+## Krok 2: Generowanie backlogu
 
-# 4. Wygeneruj backlog z ROADMAP.md / PROJECT.md
+```bash
+# Wygeneruj zadania z briefu (ROADMAP.md, PROJECT.md)
 auto-coder plan
+```
 
-# 5. Przejrzyj wygenerowany plan
-cat .auto-coder/BACKLOG.md
+Output:
+```
+✓ Generated 12 tasks from project brief
+✓ Saved to .auto-coder/tasks.yaml
+```
 
-# 6. Uruchom w trybie dry-run (symulacja)
+## Krok 3: Dry-run (rekomendowane)
+
+```bash
+# Sprawdź co zostanie wykonane
 auto-coder run --dry-run
+```
 
-# 7. Uruchom w trybie live (autonomiczne wykonanie)
+## Krok 4: Uruchomienie
+
+```bash
+# Uruchom w trybie live
 auto-coder run --live
 ```
 
-**Co się dzieje:**
-- Manager AI generuje zadania z briefu
-- Workery wykonują zadania w izolowanych git worktrees
-- Po każdym tasku `work_progress.md` jest aktualizowany i pushowany do `main`
-- Po wszystkich taskach następuje auto-commit, auto-push i auto-merge (domyślnie włączone)
-
-## Przypadek 2: Ciągłe działanie z pętlą (--loop)
+### Tryb pętli (ciągłe wykonanie)
 
 ```bash
-# Uruchom w trybie ciągłym aż do ukończenia wszystkich tasków
+# Uruchom aż do ukończenia wszystkich zadań
 auto-coder run --live --loop
 ```
 
-**Zachowanie:**
-- System działa w pętli co ~20 minut (rekomendowany interwał cron)
-- Po każdym ticku aktualizuje `PROGRESS.md` i `work_progress.md`
-- Błędy kwotowe (429) nie przerywają działania — task czeka w `waiting_for_quota`
-- Po ukończeniu wszystkich tasków proces się kończy
+## Monitorowanie postępu
 
-## Przypadek 3: Praca z istniejącym repozytorium (bootstrap)
+### Status zadań
 
 ```bash
-# 1. Jeśli repozytorium już ma kod, wygeneruj brief
-auto-coder bootstrap-brief
+auto-coder status
+```
 
-# 2. Przejrzyj i edytuj wygenerowany brief
-cat .auto-coder/PROJECT.md
+### Logi w czasie rzeczywistym
 
-# 3. Wygeneruj plan
+```bash
+tail -f .auto-coder/logs/manager.log
+```
+
+### Progress na GitHub
+
+Pliki `PROGRESS.md` i `work_progress.md` są automatycznie commitowane i pushowane po każdym zakończonym tasku.
+
+## Przykład: Pełne uruchomienie
+
+```bash
+# 1. Przygotowanie
+cd /path/to/your-repo
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 2. Inicjalizacja
+auto-coder init
+
+# 3. Sprawdzenie providerów
+auto-coder doctor --probe-live
+
+# 4. Generowanie backlogu
 auto-coder plan
 
-# 4. Uruchom
+# 5. Dry-run
+auto-coder run --dry-run
+
+# 6. Uruchomienie
 auto-coder run --live
 ```
 
-## Przydatne komendy
+## Przykład: Cron deployment
 
 ```bash
-# Sprawdź status providerów i kwot
-auto-coder doctor --probe-live
+# Dodaj cron job (co 20 minut)
+auto-cader operator install-cron --interval=20
 
-# Wyświetl aktualny postęp
-cat .auto-coder/PROGRESS.md
-cat work_progress.md
-
-# Ręczne odblokowanie taska po błędzie
-auto-coder unblock <task-id>
-
-# Wyczyść stan i zacznij od nowa
-auto-coder reset-state
+# Sprawdź zainstalowane crony
+crontab -l
 ```
 
-## Konfiguracja domyślna (po `auto-coder init`)
+## Przykład: Operator override
 
-```yaml
-# Manager AI
-manager_enabled: true
-manager_backend: cc          # Claude Code subscription (brak API key)
-manager_model: claude-opus-4-6
+```bash
+# Wymuś retry dla konkretnego zadania
+auto-cader operator force-retry --task=task-003
 
-# Worker AI
-default_worker: ccg          # Claude Code z Google subscription
-fallback_worker: cc          # Claude Code subscription jako backup
-
-# Git automation
-auto_commit: true
-auto_push: true
-auto_merge: true             # bezpośredni merge do base_branch
-auto_pr: false               # wyłączony (włącz jeśli potrzebne PR)
-
-# Review
-review_required: true
+# Zmień worker dla następnego zadania
+auto-cader operator set-worker --worker=gemini
 ```
 
-## Tryby pracy
+## Rozwiązywanie problemów
 
-| Tryb | Komenda | Opis |
-|------|---------|------|
-| Symulacja | `--dry-run` | Pokazuje co zostanie zrobione, nie wykonuje |
-| Live | `--live` | Autonomiczne wykonanie wszystkich tasków |
-| Pętla | `--live --loop` | Ciągłe działanie aż do ukończenia |
-| Pojedynczy task | `--task <id>` | Wykonaj tylko określony task |
+### Błąd kwotowy (429)
+
+System automatycznie czeka na reset kwoty. Task przechodzi w stan `waiting_for_quota`.
+
+### Zawieszone zadanie
+
+```bash
+# Sprawdź status
+auto-cader status
+
+# Wymuś retry
+auto-cader operator force-retry --task=<task-id>
+```
+
+### Debug logging
+
+```bash
+auto-cader run --live --verbose
+```
+
+## Zobacz też
+
+- [Setup](setup.md) — instalacja i konfiguracja
+- [Operator runbook](operator-runbook.md) — codzienne operacje
+- [Common pitfalls](common-pitfalls.md) — typowe problemy

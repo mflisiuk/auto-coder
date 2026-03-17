@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026-03-17] - CC/Claude Backend Support in Probe Dispatch
+### Co się zmieniło
+- **Rozszerzono `_probe_manager_backend`** w `cli.py` o obsługę backendów `cc` i `claude` — teraz `doctor --probe-live` poprawnie sprawdza dostępność Claude Code jako managera
+- **Dodano import `CcManagerBridge`** dla aliasów `cc`/`claude` — spójne z `DEFAULT_MANAGER_MODELS`
+### Poprawki błędów
+- Naprawiono brak obsługi `cc`/`claude` w ścieżce probe — wcześniej `doctor --probe-live` zgłaszał błąd dla tych backendów mimo że były wspierane w `DEFAULT_MANAGER_MODELS`
+
 ## [2026-03-17] - Default CC Manager + CCG Worker + Auto-Merge
 ### Co się zmieniło
 - **Domyślny manager backend** zmieniony z `anthropic` na `cc` (Claude Code subscription — nie wymaga API key)

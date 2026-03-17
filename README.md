@@ -37,7 +37,7 @@ auto-coder run --live
 
 ## Funkcjonalności
 
-- **AI Manager** — generuje zadania z briefu (`cc`, `claude`, `anthropic`, `codex`)
+- **AI Manager** — generuje zadania z briefu (`cc`, `claude`, `anthropic`, `codex`) — [CC-Manager Bridge](docs/cc-manager-bridge-spec.md)
 - **AI Workers** — wykonują zadania w izolowanych worktrees (`ccg`, `cc`, `cch`, `gemini`, `qwen`, `codex`)
 - **Fallback Chain** — automatyczne przełączanie przy błędach kwotowych: `ccg` → `cc` → `cch` → `gemini` → `qwen` → `codex`
 - **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów (domyślnie włączone)
