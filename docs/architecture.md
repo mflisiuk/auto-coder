@@ -1,120 +1,197 @@
-# Architektura
+# Architektura auto-coder
+
+Dokument dla deweloperów — struktura kodu, przepływ danych, jak rozbudowywać.
 
 ## Struktura projektu
 
 ```
 auto-coder/
 ├── auto_coder/
-│   ├── cli.py              # CLI entry point
-│   ├── config.py           # Konfiguracja i loading
-│   ├── orchestrator.py     # Główny orchestrator
-│   ├── operator.py         # Komendy operatora
-│   ├── brief_validator.py  # Walidacja briefu
-│   ├── bootstrap_brief.py  # Bootstrap brief generator
-│   ├── managers/
-│   │   ├── anthropic.py    # Anthropic manager backend
-│   │   ├── codex_bridge.py # Codex manager backend
-│   │   └── cc_bridge.py    # CC-Manager bridge
-│   ├── workers/
-│   │   ├── ccg_worker.py   # CCG worker
-│   │   ├── cc_worker.py    # CC worker
-│   │   └── ...             # Inni workerzy
-│   ├── storage.py          # SQLite storage layer
-│   └── execution.py        # Execution core
+│   ├── __init__.py
+│   ├── cli.py              # CLI entry point (argparse)
+│   ├── orchestrator.py     # Główny orchestrator — run_one_task, worktree management
+│   ├── worker.py           # Worker runner — spawn AI subprocessy
+│   ├── policy.py           # Validation policy — validate_baseline_spec, path_under
+│   ├── cc_bridge.py        # CC-Manager Bridge — integracja z Claude Code
+│   ├── git_ops.py          # Git operacje — worktree, merge, push
+│   ├── reports.py          # Generowanie raportów
+│   └── utils.py            # Helpery
+├── bridges/
+│   └── cc-manager/
+│       ├── src/index.mjs   # Node.js bridge do Claude Code
+│       └── package.json
 ├── docs/                   # Dokumentacja
 ├── tests/                  # Testy
-├── setup.py                # Package setup
+├── setup.py
 └── README.md
 ```
 
-## Komponenty
-
-### CLI (`cli.py`)
-
-Główny entry point dla komend:
-- `init` — inicjalizacja repozytorium
-- `plan` — generowanie backlogu
-- `run` — uruchomienie orchestratora
-- `status` — status zadań
-- `doctor` — health check
-
-### Managerowie
-
-Managerowie generują zadania z briefu projektu:
-
-| Backend | Opis | Wymaga API Key |
-|---------|------|----------------|
-| `cc` / `claude` | Claude Code subscription | Nie |
-| `anthropic` | Anthropic API | Tak |
-| `codex` | Codex API | Tak |
-
-### Workerzy
-
-Workerzy wykonują zadania w izolowanych git worktrees:
-
-| Worker | Opis | Fallback |
-|--------|------|----------|
-| `ccg` | Claude Code Google subscription | → `cc` |
-| `cc` | Claude Code subscription | → `cch` |
-| `cch` | Claude Code paid | → `gemini` |
-| `gemini` | Gemini API | → `qwen` |
-| `qwen` | Qwen API | → `codex` |
-| `codex` | Codex API | — |
-
-### Orchestrator
-
-Główna pętla wykonawcza:
-1. Pobiera następne zadanie z backlogu
-2. Tworzy izolowany git worktree
-3. Uruchamia worker z task contract
-4. Recenzuje wynik
-5. Commituje i pushuje
-6. Aktualizuje `PROGRESS.md` i `work_progress.md`
-
-### Storage
-
-SQLite database dla stanu wykonania:
-- Tasks — backlog zadań
-- Work orders — przypisania workerów
-- Attempts — próby wykonania
-- Runtime — metryki wykonania
-
-## Przepływ danych
+## Przepływ wykonania
 
 ```
-Brief (ROADMAP.md, PROJECT.md)
-    ↓
-Manager (cc/anthropic/codex)
-    ↓
-Tasks (tasks.yaml)
-    ↓
-Orchestrator
-    ↓
-Worker (ccg/cc/cch/...)
-    ↓
-Git Worktree → Code Changes
-    ↓
-Review → Commit → Push → PR
+┌─────────────┐
+│   Brief     │ (ROADMAP.md, PROJECT.md)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│ AI Manager  │ (cc/claude — generuje zadania)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  Backlog    │ (.auto-coder/tasks/backlog.json)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│ Orchestrator│ (tworzy worktree, uruchamia workera)
+└──────┬──────┘
+       │
+       ├──────────────┐
+       │              │
+       ▼              ▼
+┌─────────────┐ ┌─────────────┐
+│ AI Worker   │ │ Baseline    │
+│ (ccg/cc)    │ │ Tests       │
+└──────┬──────┘ └──────┬──────┘
+       │               │
+       ▼               ▼
+┌─────────────┐ ┌─────────────┐
+│ Code Review │ │ Test Report │
+└──────┬──────┘ └──────┬──────┘
+       │               │
+       ▼               ▼
+┌─────────────┐
+│ Merge/Push  │ (git merge, push, delete branch)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│ PROGRESS.md │ (aktualizacja statusu)
+└─────────────┘
 ```
 
-## Rozbudowa
+## Kluczowe komponenty
 
-### Dodanie nowego managera
+### orchestrator.py
 
-1. Utwórz `auto_coder/managers/<name>_bridge.py`
-2. Zaimplementuj `probe_live(config)` i `run(config, tasks)`
-3. Dodaj obsługę w `cli.py:_probe_manager_backend()`
-4. Zaktualizuj `DEFAULT_MANAGER_MODELS` w `config.py`
+Główny orchestrator odpowiedzialny za:
+- `run_one_task()` — wykonanie pojedynczego zadania
+- `_create_worktree()` — tworzenie izolowanego worktree
+- `_baseline_commands()` — generowanie komend baseline
+- `run_tests()` — uruchamianie testów baseline i task
 
-### Dodanie nowego workera
+### worker.py
 
-1. Utwórz `auto_coder/workers/<name>_worker.py`
-2. Zaimplementuj `run_task(config, task)`
-3. Dodaj do `FALLBACK_CHAIN` w `config.py`
-4. Zaktualizuj dokumentację
+Worker runner:
+- `spawn_worker()` — tworzy subprocess AI (ccg, cc, etc.)
+- `fallback_chain()` — przełączanie przy 429 errors
+- PATH augmentation — dla cron/minimal environments
 
-## Zobacz też
+### policy.py
 
-- [CC-Manager Bridge](cc-manager-bridge-spec.md)
-- [Provider routing](provider-routing.md)
-- [Execution](execution.md)
+Validation helpers:
+- `validate_baseline_spec()` — ostrzeżenia dla nieistniejących plików
+- `path_under()` — check czy ścieżka pod prefixem
+- `_normalize_prefix()` — normalizacja glob prefixów
+
+### cc_bridge.py
+
+CC-Manager Bridge:
+- `CcManagerBridge` — klasa integrująca Claude Code jako manager
+- `is_available()` — check z common install locations
+- JSON-RPC komunikacja z Node.js bridge
+
+## Jak dodać nowego workera
+
+1. Dodaj entry w `DEFAULT_WORKER_MODELS`:
+
+```python
+DEFAULT_WORKER_MODELS = {
+    "ccg": "claude-opus-4-6",
+    "cc": "claude-opus-4-6",
+    "cch": "claude-opus-4-6",
+    "gemini": "gemini-2.5-pro",
+    "qwen": "qwen-max",  # NOWY
+    "codex": "codex-latest",
+}
+```
+
+2. Zaimplementuj spawn logic w `worker.py`:
+
+```python
+def spawn_qwen_worker(task, worktree, config):
+    return subprocess.Popen(
+        ["qwen", "code", "--worktree", worktree],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+```
+
+3. Dodaj do fallback chain w `orchestrator.py`.
+
+## Jak dodać nowego managera
+
+1. Stwórz bridge class w `auto_coder/`:
+
+```python
+class NewManagerBridge:
+    def __init__(self, repo_root):
+        self.repo_root = repo_root
+    
+    def is_available(self):
+        return shutil.which("new-manager") is not None
+    
+    def generate_tasks(self, brief):
+        # Implement task generation
+        pass
+```
+
+2. Dodaj do `DEFAULT_MANAGER_MODELS` w `cli.py`.
+
+3. Zaimplementuj `_probe_manager_backend()` dla `doctor --probe-live`.
+
+## Testowanie
+
+```bash
+# Uruchom testy jednostkowe
+pytest tests/
+
+# Test integracyjny z dry-run
+auto-coder run --dry-run --task TEST_TASK
+
+# Debug mode
+auto-coder run --live --debug
+```
+
+## Rozwiązywanie problemów
+
+### Task zawieszony
+
+```bash
+# Sprawdź logi
+cat .auto-coder/reports/TASK_ID/stderr.log
+
+# Zabij proces workera
+pkill -f "ccg.*TASK_ID"
+
+# Wyczyść worktree
+git worktree remove --force .git/worktrees/TASK_ID
+```
+
+### Merge conflict
+
+```bash
+# Ręczny merge
+git checkout main
+git merge feature/TASK_ID
+
+# Rozwiąż konflikty
+git add .
+git commit -m "Resolve merge conflict"
+
+# Push
+git push origin main
+```

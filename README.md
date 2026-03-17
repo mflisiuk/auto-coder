@@ -43,6 +43,7 @@ auto-coder run --live
 - **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów (domyślnie włączone)
 - **Progress tracking** — `PROGRESS.md` i `work_progress.md` z emoji statusami
 - **Repair tasks** — automatyczne zadania naprawcze gdy baseline testy nie przejdą
+- **Baseline validation** — walidacja task-spec dla komend baseline, ostrzeżenia dla plików jeszcze nieistniejących
 
 ## Dokumentacja
 

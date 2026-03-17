@@ -1,149 +1,149 @@
 # Instalacja i konfiguracja
 
-## Wymagania
+Kompletny przewodnik instalacji `auto-coder` krok po kroku.
 
-- Python 3.10+
-- Git 2.23+ (dla worktrees)
-- Node.js 18+ (dla cc-manager bridge)
-- `claude` CLI zainstalowane i zalogowane (`claude` lub `ccg`)
-- Git remote skonfigurowany z uprawnieniami do push (SSH deploy key lub token)
+## Wymagania systemowe
+
+- **Python**: 3.10 lub nowszy
+- **Git**: 2.30 lub nowszy
+- **Node.js**: 18+ (dla Claude Code bridge)
+- **Claude Code**: zainstalowane globalnie (`npm install -g @anthropic-ai/claude-code`)
 
 ## Instalacja globalna
 
 ```bash
+# 1. Sklonuj repozytorium
 git clone https://github.com/mflisiuk/auto-coder
 cd auto-coder
+
+# 2. Zainstaluj pakiet Python
 pip install -e .
+
+# 3. Zweryfikuj instalację
+auto-coder --version
 ```
 
-Weryfikacja:
+## Instalacja Claude Code
 
 ```bash
-which auto-coder          # powinno zwrocic ~/.local/bin/auto-coder
-auto-coder --help
+# Zainstaluj Claude Code (wymaga subskrypcji Claude)
+npm install -g @anthropic-ai/claude-code
+
+# Zweryfikuj instalację
+claude --version
+
+# Zaloguj się (jeśli wymagane)
+claude auth
 ```
 
-## Inicjalizacja w repozytorium
+## Inicjalizacja repozytorium
 
 ```bash
+# Przejdź do repozytorium
 cd /path/to/your-repo
+
+# Zainicjalizuj auto-coder
 auto-coder init
 ```
 
-Tworzy strukture `.auto-coder/`:
+To tworzy strukturę:
 
 ```
-.auto-coder/
-├── config.yaml      # konfiguracja
-├── tasks.yaml       # backlog (generowany przez auto-coder plan)
-├── state.db         # stan SQLite
-└── reports/         # raporty z kazdego runu
+your-repo/
+├── .auto-coder/
+│   ├── config.yaml        # Konfiguracja projektu
+│   ├── tasks/             # Wygenerowane zadania
+│   ├── reports/           # Raporty z wykonania
+│   └── runtime.json       # Stan runtime (auto-generowany)
+├── ROADMAP.md             # Twój brief projektu
+├── PROJECT.md             # Dokumentacja projektu
+└── PROGRESS.md            # Auto-generowany postęp
 ```
 
-## Wymagane pliki projektowe
+## Konfiguracja projektu
 
-Auto-coder czyta dokumentacje projektu zeby wygenerowac backlog. Musisz stworzyc:
-
-| Plik | Co zawiera |
-|------|-----------|
-| `ROADMAP.md` | Cel projektu, milestony, kryteria akceptacji |
-| `PROJECT.md` | Stack techniczny, struktura repo, komendy (install/test/lint) |
-| `CONSTRAINTS.md` | Zakazane zmiany, granice bezpieczenstwa |
-| `PLANNING_HINTS.md` | Konwencje nazewnictwa, wzorce, wskazowki dla agenta |
-| `ARCHITECTURE_NOTES.md` | Decyzje architektoniczne, schematy JSON, kody wyjscia |
-
-**Krytyczne:** Wszystkie komendy w `PROJECT.md` musza byc sprawdzone recznie przed pierwszym runem.
-Jesli komenda failuje — wszystkie zadania wygenerowane na jej podstawie beda failowac.
-
-## Konfiguracja (`.auto-coder/config.yaml`)
-
-Domyslna konfiguracja dziala na subskrypcji Claude Max bez API key:
+Edytuj `.auto-coder/config.yaml`:
 
 ```yaml
-# Manager (planuje i recenzuje zadania)
-manager_backend: cc        # uzywa claude CLI — brak API key potrzebny
-manager_model: ""          # domyslnie claude-opus-4-6
+# Podstawowe
+project_name: "My Project"
+base_branch: "main"
+auto_pr: false
+auto_merge: true
 
-# Worker (pisze kod)
-default_worker: ccg        # ccg = Claude Code z Google
-fallback_worker: cc        # fallback na standardowy cc
+# Manager (generuje zadania)
+manager_model: "cc"  # cc, claude, anthropic, codex
+
+# Worker (wykonuje zadania)
+worker_model: "ccg"  # ccg, cc, cch, gemini, qwen, codex
+fallback_workers: ["cc", "cch", "gemini", "qwen", "codex"]
+
+# Testy
+test_timeout_minutes: 10
+baseline_timeout_minutes: 5
 
 # Git
 auto_commit: true
 auto_push: true
-auto_pr: false             # wymaga gh CLI
-auto_merge: true           # bezposredni merge do main (bez PR)
-base_branch: main
+
+# Powiadomienia (opcjonalne)
+slack_webhook: null
 ```
 
-Jesli uzywasz Anthropic API key:
-
-```yaml
-manager_backend: anthropic
-manager_model: claude-opus-4-6
-# + ustaw ANTHROPIC_API_KEY w srodowisku
-```
-
-## Generowanie backlogu
+## Weryfikacja konfiguracji
 
 ```bash
-auto-coder plan
+# Sprawdź czy auto-coder widzi wszystkie komponenty
+auto-coder doctor --probe-live
+
+# Oczekiwany output:
+# ✓ Claude Code available
+# ✓ Git worktree supported
+# ✓ Python 3.10+
+# ✓ Config valid
 ```
 
-Generuje `tasks.yaml` na podstawie `ROADMAP.md` + `PROJECT.md`.
+## Konfiguracja cron (opcjonalna)
 
-**Sprawdz po wygenerowaniu** — szczegolnie `allowed_paths` w kazdym zadaniu.
-Agent moze modyfikowac TYLKO pliki wymienione w `allowed_paths`. Jesli brakuje pliku
-(np. `gacli/errors.py`) — agent dostanie policy violation i task sie nie powiedzie.
-
-## Weryfikacja
+Dla autonomicznego deploymentu:
 
 ```bash
-auto-coder doctor
-auto-coder doctor --probe-live    # test live wywolania managera (wymaga sieci)
+# Edytuj crontab
+crontab -e
+
+# Dodaj wpis (uruchomienie co 20 minut)
+*/20 * * * * cd /path/to/repo && PATH=$PATH:~/.nvm/versions/node/v22.22.0/bin auto-coder run --live >> /var/log/auto-coder.log 2>&1
 ```
 
-Oczekiwany wynik:
+## Rozwiązywanie problemów instalacji
 
-```
-OK    git available
-OK    worker:cc
-OK    worker:ccg
-OK    manager live probe succeeded
-```
-
-## Pierwsze uruchomienie
+### Claude Code nie wykryte
 
 ```bash
-# Najpierw dry-run — sprawdz co by zrobil bez pisania kodu
-auto-coder run --dry-run
+# Sprawdź gdzie jest zainstalowane
+which claude
 
-# Live — pisze kod, commituje, pushuje
-auto-coder run --live
+# Jeśli w ~/.nvm/versions/node/v22.22.0/bin/claude
+# Dodaj do PATH w cron lub exportuj
+export PATH=$PATH:~/.nvm/versions/node/v22.22.0/bin
 ```
 
-## Cron (autonomiczny tryb)
-
-Pelna, odporna na bleedy konfiguracja crona:
+### Błąd pip install
 
 ```bash
-*/30 * * * * /usr/bin/flock -n /tmp/myrepo-autocoder.lock bash -c \
-  "cd /path/to/your-repo && rm -f .auto-coder/runner.lock && \
-   env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live" \
-  >> /path/to/your-repo/.auto-coder/cron.log 2>&1
+# Upewnij się że Python 3.10+
+python --version
+
+# Jeśli starszy, użyj python3.10
+python3.10 -m pip install -e .
 ```
 
-Kluczowe elementy:
-- **Pelna sciezka** do `auto-coder` — cron ma ubogi PATH
-- **`rm -f runner.lock`** — czysci zombie lock po zabitym procesie
-- **`env -u CLAUDECODE`** — pozwala `claude`/`ccg` uruchomic sie wewnatrz crona
-- **`flock`** — zapobiega rownoczesnemu uruchomieniu dwoch instancji
+### Git worktree nie działa
 
-Szczegoly w [docs/cron.md](cron.md).
+```bash
+# Sprawdź wersję gita
+git --version  # Musi być >= 2.30
 
-## Nastepne kroki
-
-- [Jak uzywac](usage.md)
-- [Typowe problemy i rozwiazania](common-pitfalls.md)
-- [Cron i tryb autonomiczny](cron.md)
-- [Operator runbook](operator-runbook.md)
+# Wyczyść stare worktree
+git worktree prune
+```

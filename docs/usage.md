@@ -1,137 +1,140 @@
-# Jak używać
+# Jak używać auto-coder
 
-## Przegląd workflow
+Ten dokument opisuje typowe przypadki użycia `auto-coder` — od inicjalizacji repozytorium po autonomiczne wykonywanie zadań.
 
-```
-1. init → 2. plan → 3. run --dry-run → 4. run --live
-```
+## Wymagania wstępne
 
-## Krok 1: Inicjalizacja
+- Python 3.10+
+- Git 2.30+
+- Claude Code (`claude`) zainstalowane globalnie
+- Dostęp do repozytorium z uprawnieniami do push
+
+## Inicjalizacja repozytorium
 
 ```bash
+# 1. Sklonuj auto-coder i zainstaluj
+git clone https://github.com/mflisiuk/auto-coder
+cd auto-coder
+pip install -e .
+
+# 2. Przejdź do swojego repozytorium
 cd /path/to/your-repo
+
+# 3. Zainicjalizuj auto-coder
 auto-coder init
 ```
 
-## Krok 2: Generowanie backlogu
+Komenda `init` tworzy:
+- `.auto-coder/config.yaml` — konfiguracja projektu
+- `.auto-coder/tasks/` — katalog na wygenerowane zadania
+- `.auto-coder/reports/` — raporty z wykonania zadań
+
+## Sprawdzenie konfiguracji
 
 ```bash
-# Wygeneruj zadania z briefu (ROADMAP.md, PROJECT.md)
+# Sprawdź czy auto-coder widzi Claude Code
+auto-coder doctor --probe-live
+
+# Sprawdź aktualną konfigurację
+auto-coder config show
+```
+
+## Generowanie backlogu
+
+```bash
+# Wygeneruj zadania z ROADMAP.md i PROJECT.md
 auto-coder plan
+
+# Zobacz wygenerowane zadania
+cat .auto-coder/tasks/backlog.json
 ```
 
-Output:
-```
-✓ Generated 12 tasks from project brief
-✓ Saved to .auto-coder/tasks.yaml
-```
-
-## Krok 3: Dry-run (rekomendowane)
+## Uruchomienie wykonania
 
 ```bash
-# Sprawdź co zostanie wykonane
+# Najpierw suchy przebieg — sprawdź co się wydarzy
 auto-coder run --dry-run
-```
 
-## Krok 4: Uruchomienie
-
-```bash
-# Uruchom w trybie live
+# Uruchom autonomiczne wykonanie
 auto-coder run --live
 ```
 
-### Tryb pętli (ciągłe wykonanie)
-
-```bash
-# Uruchom aż do ukończenia wszystkich zadań
-auto-coder run --live --loop
-```
+Podczas wykonania:
+- `auto-coder` tworzy izolowane worktree dla każdego zadania
+- Uruchamia AI workera (`ccg` domyślnie) w worktree
+- Recenzuje zmiany i uruchamia testy baseline
+- Commituje, pushuje i merge'uje do base branch
+- Aktualizuje `PROGRESS.md` i `work_progress.md`
 
 ## Monitorowanie postępu
 
-### Status zadań
-
 ```bash
-auto-coder status
+# Zobacz aktualny postęp
+cat PROGRESS.md
+
+# Zobacz szczegóły ostatniego zadania
+cat .auto-coder/reports/latest/report.json
 ```
 
-### Logi w czasie rzeczywistym
+## Konfiguracja zadań — baseline_commands
 
-```bash
-tail -f .auto-coder/logs/manager.log
+Dla zadań tworzących pliki od zera użyj pustej listy baseline_commands:
+
+```yaml
+# W task-spec JSON
+{
+  "id": "create-new-module",
+  "title": "Create new authentication module",
+  "allowed_paths": ["src/auth/**"],
+  "baseline_commands": [],  # Pomiń testy baseline — pliki nie istnieją
+  "test_commands": ["pytest tests/auth/"]
+}
 ```
 
-### Progress na GitHub
+Dla zadań modyfikujących istniejące pliki:
 
-Pliki `PROGRESS.md` i `work_progress.md` są automatycznie commitowane i pushowane po każdym zakończonym tasku.
-
-## Przykład: Pełne uruchomienie
-
-```bash
-# 1. Przygotowanie
-cd /path/to/your-repo
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# 2. Inicjalizacja
-auto-coder init
-
-# 3. Sprawdzenie providerów
-auto-coder doctor --probe-live
-
-# 4. Generowanie backlogu
-auto-coder plan
-
-# 5. Dry-run
-auto-coder run --dry-run
-
-# 6. Uruchomienie
-auto-coder run --live
+```yaml
+{
+  "id": "fix-auth-bug",
+  "title": "Fix authentication bug",
+  "allowed_paths": ["src/auth/**"],
+  "baseline_commands": ["pytest tests/auth/"],  # Uruchom przed zmianą
+  "test_commands": ["pytest tests/auth/"]       # Uruchom po zmianie
+}
 ```
 
-## Przykład: Cron deployment
+## Tryby uruchomienia
+
+| Tryb | Komenda | Opis |
+|------|---------|------|
+| Dry-run | `auto-coder run --dry-run` | Symulacja — pokazuje co się wydarzy |
+| Live | `auto-coder run --live` | Pełne autonomiczne wykonanie |
+| Single task | `auto-coder run --task TASK_ID` | Wykonaj pojedyncze zadanie |
+| Debug | `auto-coder run --live --debug` | Verbose logging |
+
+## Cron deployment
+
+Rekomendowany model deploymentu to cron co 20 minut:
 
 ```bash
-# Dodaj cron job (co 20 minut)
-auto-cader operator install-cron --interval=20
+# Dodaj do crontab
+crontab -e
 
-# Sprawdź zainstalowane crony
-crontab -l
-```
-
-## Przykład: Operator override
-
-```bash
-# Wymuś retry dla konkretnego zadania
-auto-cader operator force-retry --task=task-003
-
-# Zmień worker dla następnego zadania
-auto-cader operator set-worker --worker=gemini
+# Uruchamiaj auto-coder co 20 minut
+*/20 * * * * cd /path/to/repo && auto-coder run --live >> /var/log/auto-coder.log 2>&1
 ```
 
 ## Rozwiązywanie problemów
 
-### Błąd kwotowy (429)
-
-System automatycznie czeka na reset kwoty. Task przechodzi w stan `waiting_for_quota`.
-
-### Zawieszone zadanie
-
 ```bash
-# Sprawdź status
-auto-cader status
+# Sprawdź logi ostatniego zadania
+cat .auto-coder/reports/latest/stderr.log
 
-# Wymuś retry
-auto-cader operator force-retry --task=<task-id>
+# Wymuś naprawę tasku
+auto-coder repair TASK_ID
+
+# Zresetuj stan runtime
+rm .auto-coder/runtime.json
 ```
 
-### Debug logging
-
-```bash
-auto-cader run --live --verbose
-```
-
-## Zobacz też
-
-- [Setup](setup.md) — instalacja i konfiguracja
-- [Operator runbook](operator-runbook.md) — codzienne operacje
-- [Common pitfalls](common-pitfalls.md) — typowe problemy
+Więcej w [Typowe problemy](common-pitfalls.md).

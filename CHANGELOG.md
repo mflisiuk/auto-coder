@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-03-17] - Baseline Validation & Branch Cleanup
+### Co się zmieniło
+- **Dodano `validate_baseline_spec()`** w `policy.py` — ostrzeżenia gdy komendy baseline odnoszą się do plików, które task ma dopiero utworzyć
+- **Smart baseline skip** — taski tworzące pliki od zera mogą ustawić `baseline_commands: []` aby pominąć baseline
+- **Automatyczne usuwanie branchy** — feature branch jest usuwany z origin i lokalnie po udanym merge do base branch
+- **Naprawiono blokowanie tasków rodziców** — brakujące runtime dependency i quarantined repair task nie blokują już permanentnie rodzica
+
+### Poprawki błędów
+- Naprawiono permanentne blokowanie tasków rodziców przez missing runtime dependency
+- Naprawiono permanentne blokowanie tasków rodziców przez quarantined repair task
+- Naprawiono pozostawianie branchy feature po merge — teraz są automatycznie usuwane
+- Naprawiono heurystykę baseline — zastąpiono jawną walidacją task-spec
+
 ## [2026-03-17] - PATH Augmentation for Cron/Minimal Environments
 ### Co się zmieniło
 - **Rozszerzono `CcManagerBridge.is_available()`** w `cc_bridge.py` o sprawdzanie common install locations (`~/.nvm/versions/node/v22.22.0/bin/claude`, `~/.local/bin/claude`, `/usr/local/bin/claude`) — działa w cron środowiskach bez sourcing ~/.bashrc
