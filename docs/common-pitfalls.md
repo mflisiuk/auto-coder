@@ -92,9 +92,41 @@ sqlite3 .auto-coder/state.db "DELETE FROM leases"
 
 ---
 
+### Bleedy #4: Baseline na pliki które task tworzy od zera (kurze jajko)
+
+**Problem:**
+```
+status: quarantined
+note: Baseline tests failed: commands=python3.12 -m pytest tests/test_metadata.py
+excerpt=ERROR: file or directory not found: tests/test_metadata.py
+```
+
+**Przyczyna:**
+- Task ma stworzyć `tests/test_metadata.py` od zera
+- Baseline command próbuje uruchomić `pytest tests/test_metadata.py`
+- Plik nie istnieje jeszcze → baseline fail → repair task → quarantine
+- Task w quarantine blokuje wszystkie pozostałe
+
+**Rozwiazanie (kod):**
+Naprawione w auto-coder v1.0.6+:
+- Parsuje baseline commands i wyciąga ścieżki do plików
+- Jeśli plik nie istnieje JEST w `allowed_paths` → pomija ten command
+- Skipped commands są logowane do `baseline-skipped.json`
+
+**Rozwiazanie (workaround):**
+Ustaw puste `baseline_commands: []` dla tasków które tworzą pliki od zera:
+```yaml
+- id: my-task
+  baseline_commands: []  # Task tworzy plik od zera
+  completion_commands:
+    - python3.12 -m pytest tests/test_new.py -v  # Walidacja po task
+```
+
+---
+
 ## KONFIGURACJA
 
-### Bleedy #4: `allowed_paths` nie zawiera wszystkich potrzebnych plikow
+### Bleedy #5: `allowed_paths` nie zawiera wszystkich potrzebnych plikow
 
 **Problem:**
 ```
@@ -120,7 +152,7 @@ Po `auto-coder plan` sprawdz `tasks.yaml` i rozszerz `allowed_paths` jesli plik 
 
 ---
 
-### Bleedy #5: Manager/Worker wybieraja zly backend
+### Bleedy #6: Manager/Worker wybieraja zly backend
 
 **Problem:**
 Worker to `cc` zamiast `ccg`, manager to `anthropic` zamiast `cc`.
@@ -137,7 +169,7 @@ fallback_worker: cc
 
 ## Z INNYCH DNI
 
-### Bleedy #6: Komendy w `PROJECT.md` uzywaja `python` zamiast `python3`
+### Bleedy #7: Komendy w `PROJECT.md` uzywaja `python` zamiast `python3`
 
 **Problem:**
 ```
@@ -153,7 +185,7 @@ baseline_commands:
 
 ---
 
-### Bleedy #7: API key w wrong env var
+### Bleedy #8: API key w wrong env var
 
 **Problem:**
 ```bash
