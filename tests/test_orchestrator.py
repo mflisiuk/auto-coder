@@ -111,6 +111,69 @@ class TestSelectTask(unittest.TestCase):
         task = select_task(tasks, state)
         self.assertEqual(task["id"], "task-b")
 
+    def test_quarantined_repair_task_unblocks_parent(self):
+        # A quarantined runtime dependency (repair task gave up) should NOT
+        # permanently block the parent — the parent gets to try again.
+        tasks = [
+            {
+                "id": "task-a",
+                "mode": "safe",
+                "enabled": True,
+                "priority": 10,
+                "runtime_depends_on": ["repair-baseline::task-a"],
+            },
+        ]
+        state = {
+            "tasks": {
+                "task-a": {"status": "ready"},
+                "repair-baseline::task-a": {"status": "quarantined"},
+            },
+            "runs": [],
+        }
+        task = select_task(tasks, state)
+        self.assertEqual(task["id"], "task-a")
+
+    def test_abandoned_repair_task_unblocks_parent(self):
+        tasks = [
+            {
+                "id": "task-a",
+                "mode": "safe",
+                "enabled": True,
+                "priority": 10,
+                "runtime_depends_on": ["repair-baseline::task-a"],
+            },
+        ]
+        state = {
+            "tasks": {
+                "task-a": {"status": "ready"},
+                "repair-baseline::task-a": {"status": "abandoned"},
+            },
+            "runs": [],
+        }
+        task = select_task(tasks, state)
+        self.assertEqual(task["id"], "task-a")
+
+    def test_static_depends_on_still_requires_completed(self):
+        # Static depends_on must still be completed — quarantined does NOT unblock.
+        tasks = [
+            {
+                "id": "task-b",
+                "mode": "safe",
+                "enabled": True,
+                "priority": 10,
+                "depends_on": ["task-a"],
+            },
+        ]
+        state = {
+            "tasks": {
+                "task-a": {"status": "quarantined"},
+                "task-b": {"status": "ready"},
+            },
+            "runs": [],
+        }
+        task = select_task(tasks, state)
+        self.assertIsNone(task)
+
 
 class TestShouldRetry(unittest.TestCase):
     def test_retryable_statuses(self):

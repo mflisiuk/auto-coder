@@ -28,9 +28,15 @@ def should_retry(status: str | None) -> bool:
 
 def dependencies_satisfied(task: dict[str, Any], state: dict[str, Any]) -> bool:
     task_state = state.get("tasks", {})
-    dependencies = list(task.get("depends_on", [])) + list(task.get("runtime_depends_on", []))
-    for dependency in dependencies:
-        if task_state.get(dependency, {}).get("status") != "completed":
+    # Static dependencies: must be completed.
+    for dep in task.get("depends_on", []):
+        if task_state.get(dep, {}).get("status") != "completed":
+            return False
+    # Runtime dependencies (auto-generated repair tasks): quarantined or abandoned
+    # counts as resolved — the repair gave up, so the parent should proceed.
+    for dep in task.get("runtime_depends_on", []):
+        status = task_state.get(dep, {}).get("status")
+        if status not in {"completed", "quarantined", "abandoned"}:
             return False
     return True
 
