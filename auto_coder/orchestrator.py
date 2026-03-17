@@ -1163,8 +1163,40 @@ def run_one_task(
                 return 1
 
         # ── baseline ──────────────────────────────────────────────────────────
+        baseline_commands = _baseline_commands(task)
+        # Filter out baseline commands that reference files which don't exist yet
+        # but are in allowed_paths (i.e., the task will create them).
+        filtered_baseline = []
+        for cmd in baseline_commands:
+            import shlex
+            try:
+                # Extract file paths from commands like "pytest tests/test_x.py"
+                parts = shlex.split(cmd)
+                file_refs = [p for p in parts if '/' in p and p.endswith('.py')]
+                skip = False
+                for ref in file_refs:
+                    if not (worktree / ref).exists():
+                        # Check if this file is something the task is meant to create
+                        allowed = list(task.get("allowed_paths") or config.get("allowed_paths", []))
+                        for allowed_path in allowed:
+                            # Handle both exact matches and directory matches
+                            if ref == allowed_path or ref.startswith(allowed_path.rstrip('/') + '/'):
+                                skip = True
+                                break
+                        if skip:
+                            _save_json(
+                                report_dir / "baseline-skipped.json",
+                                {"reason": f"File not yet created: {ref}", "command": cmd},
+                            )
+                            break
+                if not skip:
+                    filtered_baseline.append(cmd)
+            except Exception:
+                # If parsing fails, keep the original command
+                filtered_baseline.append(cmd)
+
         baseline_ok, baseline_results = run_tests(
-            _baseline_commands(task), worktree, report_dir,
+            filtered_baseline, worktree, report_dir,
             config["test_timeout_minutes"], prefix="baseline-tests",
         )
         if not baseline_ok:
