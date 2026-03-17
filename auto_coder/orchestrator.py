@@ -1539,6 +1539,19 @@ def run_one_task(
             },
         )
         changed_for_commit = sorted(set(changed + ["work_progress.md"]))
+        # Always push work_progress.md directly to base_branch so it's visible
+        # on main without hunting through feature branches.
+        if config.get("auto_push"):
+            _wp_src = worktree / "work_progress.md"
+            _wp_dst = project_root / "work_progress.md"
+            if _wp_src.exists():
+                import shutil as _shutil
+                _shutil.copy2(_wp_src, _wp_dst)
+                _git(project_root, "add", "--", "work_progress.md")
+                _git(project_root, "commit", "-m", "chore: update work_progress.md [auto-coder]",
+                     "--allow-empty")
+                _git(project_root, "push", "origin",
+                     str(config.get("base_branch", "main")))
         if config.get("auto_commit"):
             msg = f"chore(ai): {task.get('title', task_id)} [auto-coder]"
             _git(worktree, "add", "--", *changed_for_commit)
