@@ -720,7 +720,7 @@ from auto_coder.git_ops import create_worktree as _create_worktree_impl
 from auto_coder.git_ops import git as _git_impl
 from auto_coder.git_ops import remove_worktree as _remove_worktree_impl
 from auto_coder.git_ops import resolve_worktree_base_ref as _resolve_worktree_base_ref_impl
-from auto_coder.policy import validate_changed_files as _validate_changed_files_impl
+from auto_coder.policy import validate_baseline_spec, validate_changed_files as _validate_changed_files_impl
 from auto_coder.reports import ensure_dir as _ensure_impl
 from auto_coder.reports import load_json as _load_json_impl
 from auto_coder.reports import read_text as _read_impl
@@ -1164,39 +1164,10 @@ def run_one_task(
 
         # ── baseline ──────────────────────────────────────────────────────────
         baseline_commands = _baseline_commands(task)
-        # Filter out baseline commands that reference files which don't exist yet
-        # but are in allowed_paths (i.e., the task will create them).
-        filtered_baseline = []
-        for cmd in baseline_commands:
-            import shlex
-            try:
-                # Extract file paths from commands like "pytest tests/test_x.py"
-                parts = shlex.split(cmd)
-                file_refs = [p for p in parts if '/' in p and p.endswith('.py')]
-                skip = False
-                for ref in file_refs:
-                    if not (worktree / ref).exists():
-                        # Check if this file is something the task is meant to create
-                        allowed = list(task.get("allowed_paths") or config.get("allowed_paths", []))
-                        for allowed_path in allowed:
-                            # Handle both exact matches and directory matches
-                            if ref == allowed_path or ref.startswith(allowed_path.rstrip('/') + '/'):
-                                skip = True
-                                break
-                        if skip:
-                            _save_json(
-                                report_dir / "baseline-skipped.json",
-                                {"reason": f"File not yet created: {ref}", "command": cmd},
-                            )
-                            break
-                if not skip:
-                    filtered_baseline.append(cmd)
-            except Exception:
-                # If parsing fails, keep the original command
-                filtered_baseline.append(cmd)
-
+        for warning in validate_baseline_spec(task, project_root):
+            print(f"[task-spec WARNING] {warning}")
         baseline_ok, baseline_results = run_tests(
-            filtered_baseline, worktree, report_dir,
+            baseline_commands, worktree, report_dir,
             config["test_timeout_minutes"], prefix="baseline-tests",
         )
         if not baseline_ok:

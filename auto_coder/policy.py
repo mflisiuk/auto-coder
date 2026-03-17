@@ -1,6 +1,9 @@
 """Execution policy helpers."""
 from __future__ import annotations
 
+import shlex
+from pathlib import Path
+
 
 def _normalize_prefix(prefix: str) -> str:
     """Collapse glob suffixes (/** or /*) into a plain directory prefix."""
@@ -22,6 +25,42 @@ def path_under(path: str, prefixes: list[str]) -> bool:
         if item.startswith(norm + "/"):
             return True
     return False
+
+
+def validate_baseline_spec(task: dict, repo_root: Path) -> list[str]:
+    """Return warnings when baseline commands reference files that the task
+    is supposed to create (i.e. listed in allowed_paths but not yet present).
+
+    The correct pattern for tasks that create files from scratch is to set
+    baseline_commands: [] — an empty list skips the baseline entirely.
+    """
+    warnings: list[str] = []
+    baseline = list(task.get("baseline_commands", task.get("test_commands", [])))
+    allowed = list(task.get("allowed_paths", []))
+    task_id = task.get("id", "<unknown>")
+
+    for cmd in baseline:
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            continue
+        for part in parts:
+            if part.startswith("-"):
+                continue
+            p = Path(part)
+            if not p.suffix:
+                continue
+            if not (repo_root / p).exists():
+                for a in allowed:
+                    if str(p) == a or str(p).startswith(a.rstrip("/") + "/"):
+                        warnings.append(
+                            f"Task '{task_id}': baseline command {cmd!r} references"
+                            f" '{p}' which is in allowed_paths but does not exist."
+                            f" If this task creates the file from scratch, use"
+                            f" baseline_commands: []"
+                        )
+                        break
+    return warnings
 
 
 def validate_changed_files(
