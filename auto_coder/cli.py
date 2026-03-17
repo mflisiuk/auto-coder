@@ -79,6 +79,10 @@ def _probe_manager_backend(config: dict[str, Any]) -> str:
         from auto_coder.managers.codex_bridge import CodexManagerBridge
 
         return CodexManagerBridge.probe_live(config)
+    if backend in ("cc", "claude"):
+        from auto_coder.managers.cc_bridge import CcManagerBridge
+
+        return CcManagerBridge.probe_live(config)
     raise RuntimeError(f"Unsupported manager backend: {backend}")
 
 def cmd_init(args: argparse.Namespace) -> int:
