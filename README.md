@@ -4,12 +4,13 @@
 
 ## Co to robi
 
-`auto-coder` to Pythonowy workflow engine dla zespołów chcących automatyzować dostarczanie feature'ów. Czyta dokumentację produktu (`ROADMAP.md`, `PROJECT.md`), generuje backlog przez AI managera (`anthropic`, `codex` lub nowy `cc-manager`), uruchamia workerów w izolowanych środowiskach, recenzuje wyniki i merge'uje do main.
+`auto-coder` to Pythonowy workflow engine dla zespołów chcących automatyzować dostarczanie feature'ów. Czyta dokumentację produktu (`ROADMAP.md`, `PROJECT.md`), generuje backlog przez AI managera, uruchamia workerów w izolowanych środowiskach, recenzuje wyniki i merge'uje do main.
 
 **Kluczowe właściwości:**
+- Domyślnie używa **Claude Code subscription** (manager: `cc`, worker: `ccg`) — nie wymaga API key
 - Jedna instalacja działa dla dowolnej liczby repozytoriów
 - Błędy kwotowe (429) nie są zaliczane jako failure — system czeka na reset kwoty
-- `PROGRESS.md` jest aktualizowany po każdym ticku — zawsze widoczny na GitHub
+- `PROGRESS.md` i `work_progress.md` aktualizowane po każdym ticku — zawsze widoczny na GitHub
 - Cron co 20 min to rekomendowany model deploymentu (bez persistent daemon)
 
 ## Szybki start
@@ -36,10 +37,10 @@ auto-coder run --live
 
 ## Funkcjonalności
 
-- **AI Manager** — generuje zadania z briefu (`anthropic`, `codex`, `cc-manager`)
-- **AI Workers** — wykonują zadania w izolowanych worktrees (`cc`, `cch`, `gemini`, `qwen`, `codex`)
-- **Fallback Chain** — automatyczne przełączanie przy błędach kwotowych: cc → cch → gemini → qwen → codex
-- **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów
+- **AI Manager** — generuje zadania z briefu (`cc`, `claude`, `anthropic`, `codex`)
+- **AI Workers** — wykonują zadania w izolowanych worktrees (`ccg`, `cc`, `cch`, `gemini`, `qwen`, `codex`)
+- **Fallback Chain** — automatyczne przełączanie przy błędach kwotowych: `ccg` → `cc` → `cch` → `gemini` → `qwen` → `codex`
+- **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów (domyślnie włączone)
 - **Progress tracking** — `PROGRESS.md` i `work_progress.md` z emoji statusami
 - **Repair tasks** — automatyczne zadania naprawcze gdy baseline testy nie przejdą
 

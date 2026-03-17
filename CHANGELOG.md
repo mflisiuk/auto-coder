@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-03-17] - Default CC Manager + CCG Worker + Auto-Merge
+### Co się zmieniło
+- **Domyślny manager backend** zmieniony z `anthropic` na `cc` (Claude Code subscription — nie wymaga API key)
+- **Domyślny worker** zmieniony z `cc` na `ccg` (Claude Code z Google subscription)
+- **Fallback worker** zmieniony z `cch` na `cc` (Claude Code subscription jako backup)
+- **Auto-commit i auto-push** domyślnie włączone (`true`)
+- **Auto-merge** domyślnie włączony (`true`) — bezpośredni merge do `base_branch` gdy `auto_pr=false`
+- **Dodano obsługę aliasów** w `DEFAULT_MANAGER_MODELS`: `cc` i `claude` → `claude-opus-4-6`
+- **work_progress.md** automatycznie pushowany do `main` po każdym zakończonym tasku
+
+### Poprawki błędów
+- Naprawiono 5 błędów wykrytych podczas rzeczywistego uruchomienia `ga-cli` (szczegóły w commit `3ad9e6d`)
+- Ujednolicono domyślne wartości w `default_config()` z wartościami w przykładowej konfiguracji YAML
+
 ## [2026-03-16] - CC-Manager Bridge Integration
 ### Co się zmieniło
 - Dodano mostek `cc-manager` integrujący Claude Code jako backend menedżera
