@@ -1,423 +1,200 @@
-# Common Pitfalls & Solutions
+# Typowe problemy i rozwiazania
 
-**Universal lessons learned from auto-coder deployments**
+**Uniwersalne lekcje wynikniete z wdrozen auto-codera**
 
-This document contains the most common, stupid bugs that prevent auto-coder from working. These are "facepalm" errors that waste hours but have simple fixes.
-
----
-
-## 🔥 TOP 3 CRITICAL BUGS
-
-### Bug #1: `python` vs `python3` Commands
-
-**The Problem:**
-```yaml
-# In PROJECT.md or tasks.yaml
-baseline_commands:
-  - python -m compileall src  # ❌ WRONG
-```
-
-**The Error:**
-```
-bash: line 1: python: command not found
-returncode: 127
-status: quarantined
-```
-
-**Why This Happens:**
-- Auto-coder reads PROJECT.md to generate tasks
-- If PROJECT.md has `python`, all tasks get `python` commands
-- Most Linux systems don't have `python` command (only `python3`)
-- Tasks fail baseline → get quarantined → BLOCK EVERYTHING
-
-**The Fix:**
-```bash
-# In PROJECT.md, line 54:
-sed -i 's/python -m/python3 -m/g' PROJECT.md
-```
-
-**Prevention:**
-- ALWAYS use `python3` in PROJECT.md
-- Check with `which python` before using `python`
-- Test baseline commands manually before running auto-coder
+Ten dokument opisuje najczestsze bledy ktore blokuja auto-codera. To sa "oczywiste" bledy ktere zjadaja godziny,
+ale maja proste rozwiazania.
 
 ---
 
-### Bug #2: ANTHROPIC_API_KEY Not Set
+## 🔥 TOP 3 KRYTYCZNE BLEY DZISIEJSZEJ SESJI
 
-**The Problem:**
-```bash
-# You have:
-ANTHROPIC_AUTH_TOKEN=sk-ant-...
-
-# Auto-coder checks:
-os.environ.get("ANTHROPIC_API_KEY")  # ❌ NOT FOUND
-```
-
-**The Error:**
-```
-FAIL  manager:anthropic key
-RuntimeError: Manager backend unavailable: anthropic
-```
-
-**Why This Happens:**
-- Auto-coder checks `ANTHROPIC_API_KEY`
-- Your system has `ANTHROPIC_AUTH_TOKEN`
-- Different variable names → auto-coder can't find the key
-
-**The Fix:**
-```bash
-# In scripts/auto-coder-live.sh:
-export ANTHROPIC_API_KEY="${ANTHROPIC_AUTH_TOKEN:-}"
-```
-
-**Prevention:**
-- Add API key export to the entry script
-- Test with: `auto-coder doctor --probe-live`
-- Verify key is set in the actual runtime environment
-
----
-
-### Bug #3: Manager Disabled by Default
-
-**The Problem:**
-```yaml
-# In .auto-coder/config.yaml:
-manager_enabled: false  # ❌ WRONG
-```
-
-**The Error:**
-```
-RuntimeError: Manager backend unavailable: anthropic
-```
-
-**Why This Happens:**
-- Auto-coder init creates config with `manager_enabled: false`
-- You need to explicitly enable it
-- Without manager, no tasks get planned
-
-**The Fix:**
-```bash
-# In .auto-coder/config.yaml:
-sed -i 's/manager_enabled: false/manager_enabled: true/' .auto-coder/config.yaml
-```
-
-**Prevention:**
-- Always check config after `auto-coder init`
-- Run `auto-coder doctor` to verify setup
-- Enable manager if you want autonomous development
-
----
-
-## ⚙️ CONFIGURATION PITFALLS
-
-### Pitfall #4: Wrong Manager Backend
+### Bleedy #1: Cron ma ubogi PATH — `claude`/`ccg` niedostepne
 
 **Problem:**
-```yaml
-manager_backend: codex  # But you don't have Codex quota
+```
+RuntimeError: Manager backends unavailable: cc (primary), anthropic (fallback)
 ```
 
-**Solution:**
-```yaml
-manager_backend: anthropic  # Use Claude
+**Przyczyna:**
+- `claude` CLI jest zainstalowane w `~/.nvm/versions/node/v22.22.0/bin/`
+- Cron nie laduje `~/.bashrc` ani `~/.nvm/nvm.sh` — PATH jest minimalistyczny
+- Auto-coder nie moze znalesc `claude` — `is_available()` zwraca False
+
+**Rozwiazanie (kod):**
+Naprawione w auto-coder v1.0.5+:
+- `cc_bridge.py`: `is_available()` sprawdza hardcoded sciezki
+- `worker.py`: rozszerza PATH przed uruchomieniem workera
+- `bridges/cc-manager/index.mjs`: rozszerza PATH przed spawnowaniem `claude`
+
+**Rozwiazanie (cron):**
+Uzyj pelnej sciezki w cronie:
+```bash
+# ZLE:
+*/30 * * * * cd /repo && auto-coder run --live
+
+# DOBRZE:
+*/30 * * * * /usr/bin/flock -n /tmp/lock bash -c \
+  "cd /repo && env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live"
 ```
 
 ---
 
-### Pitfall #5: No Fallback Configured
+### Bleedy #2: Zombie `runner.lock` po zabitym procesie
 
 **Problem:**
+```
+RuntimeError: auto-coder already running: /path/to/.auto-coder/runner.lock
+```
+
+**Przyczyna:**
+- Proces auto-coder zostal zabity (SIGKILL, timeout, restart VPS)
+- Plik locka zostal z PID nieistniejacego procesu
+- Kolejny run widzi lock i rezygnuje
+
+**Rozwiazanie:**
+Czyszc lock przed kazdym runem w cronie:
+```bash
+*/30 * * * * bash -c "cd /repo && rm -f .auto-coder/runner.lock && auto-coder run --live"
+```
+
+---
+
+### Bleedy #3: Stale lease w `state.db` blokuje kolejne runy
+
+**Problem:**
+```
+note: Task already leased by another run.
+status: blocked
+```
+
+**Przyczyna:**
+- Run zostal przerwany (SIGKILL) przed `finally` block
+- Lease w `state.db` zostal z `expires_at` 2h w przyszlosci
+- `recover_interrupted_runs()` markowal run jako `interrupted` ale NIE usuwal lease
+
+**Rozwiazanie (kod):**
+Naprawione w auto-coder v1.0.5+:
+```python
+# storage.py: recover_interrupted_runs()
+if stale_run_ids:
+    # Release leases held by interrupted runs
+    conn.executemany(
+        "DELETE FROM leases WHERE run_tick_id = ?",
+        [(run_id,) for run_id in stale_run_ids],
+    )
+```
+
+**Rozwiazanie (reczne):**
+```bash
+sqlite3 .auto-coder/state.db "DELETE FROM leases"
+```
+
+---
+
+## KONFIGURACJA
+
+### Bleedy #4: `allowed_paths` nie zawiera wszystkich potrzebnych plikow
+
+**Problem:**
+```
+Policy violations:
+  - outside_allowed:gacli/errors.py
+status: waiting_for_retry
+```
+
+**Przyczyna:**
+- Agent potrzebuje zmodyfikowac plik ktory nie jest w `allowed_paths` zadania
+- Np. task `m1-auth` potrzebuje dodac `AuthError` do `gacli/errors.py`
+- Manager (AI) czasem wybiera zbyt waskie `allowed_paths` w work order
+
+**Rozwiazanie:**
+Po `auto-coder plan` sprawdz `tasks.yaml` i rozszerz `allowed_paths` jesli plik jest wspolny:
 ```yaml
+- id: m1-auth
+  allowed_paths:
+    - gacli/auth.py
+    - gacli/errors.py    # DODANE — wspolny plik
+    - tests/test_auth.py
+```
+
+---
+
+### Bleedy #5: Manager/Worker wybieraja zly backend
+
+**Problem:**
+Worker to `cc` zamiast `ccg`, manager to `anthropic` zamiast `cc`.
+
+**Rozwiazanie:**
+```yaml
+# .auto-coder/config.yaml
+manager_backend: cc
 default_worker: ccg
-# ccg quota exhausted → no worker available → BLOCKED
+fallback_worker: cc
 ```
 
-**Solution - Multi-level fallback chain:**
+---
+
+## Z INNYCH DNI
+
+### Bleedy #6: Komendy w `PROJECT.md` uzywaja `python` zamiast `python3`
+
+**Problem:**
+```
+bash: python: command not found
+```
+
+**Rozwiazanie:**
+Zawsze uzywaj `python3` w `PROJECT.md`:
 ```yaml
-# Worker fallback chain: ccg → cch → gemini → qwen → claude → codex
-default_worker: ccg
-fallback_worker: cch
-
-providers:
-  ccg:
-    token_limit_daily: 100000
-    quota_threshold: 0.80
-    fallback: cch
-  cch:
-    token_limit_daily: 200000
-    quota_threshold: 0.90
-    fallback: gemini
-  gemini:
-    token_limit_daily: 100000
-    quota_threshold: 0.80
-    fallback: qwen
-  qwen:
-    token_limit_daily: 100000
-    quota_threshold: 0.80
-    fallback: claude
-  claude:
-    token_limit_daily: 500000
-    quota_threshold: 0.90
-    fallback: codex
-  codex:
-    token_limit_daily: 100000
-    quota_threshold: 0.80
-    fallback: null  # End of chain
-
-providers:
-  codex:
-    fallback: cc  # When Codex quota → use Claude
-```
-
----
-
-### Pitfall #6: Quarantine Blocks Everything
-
-**Problem:**
-```
-Task fails 3x → quarantined → BLOCKS ALL OTHER TASKS
-```
-
-**Why This Happens:**
-- Auto-coder creates repair tasks for failures
-- If repair tasks also fail → quarantine
-- Quarantined tasks prevent new tasks from starting
-
-**Solution:**
-```bash
-# 1. Fix root cause (e.g., PROJECT.md)
-# 2. Disable quarantined tasks in tasks.local.yaml:
-cat >> .auto-coder/tasks.local.yaml <<EOF
-- id: repair-environment::missing-command-python
-  enabled: false
-EOF
-
-# 3. Reset state:
-rm .auto-coder/state.db .auto-coder/state.json
-```
-
-**Prevention:**
-- Fix baseline commands before running
-- Test baseline commands manually
-- Check cron.log for errors
-
----
-
-## 🔧 OPERATIONAL PITFALLS
-
-### Pitfall #7: Stale Lock Files
-
-**Problem:**
-```
-RuntimeError: auto-coder already running
-```
-
-**Cause:** Previous run crashed without cleaning lock
-
-**Solution:**
-```bash
-rm .auto-coder/runner.lock .auto-coder/cron.lock
-```
-
-**Prevention:**
-- Use `flock` in cron (already in `install-cron`)
-- Check for lock files before manual runs
-
----
-
-### Pitfall #8: Doctor Check False Positives
-
-**Problem:**
-```bash
-$ auto-coder doctor
-FAIL  manager:anthropic key
-
-# But auto-coder works fine in cron!
-```
-
-**Why This Happens:**
-- Test shell lacks environment variables
-- Cron environment has different vars
-
-**Solution:**
-- Trust actual runs, not just doctor
-- Check environment: `env | grep ANTHROPIC`
-- Test with same environment as cron
-
----
-
-### Pitfall #9: Wrong Base Branch
-
-**Problem:**
-```yaml
-base_branch: feature/old-branch  # Branch doesn't exist
-```
-
-**Solution:**
-```yaml
-base_branch: main  # Use existing branch
-worktree_base_ref: "origin/main"
-```
-
----
-
-## 📁 PROJECT STRUCTURE PITFALLS
-
-### Pitfall #10: PROJECT.md Is Source of Truth
-
-**Critical:** Auto-coder generates tasks from PROJECT.md
-
-**If PROJECT.md is wrong → ALL TASKS ARE WRONG**
-
-**Example:**
-```markdown
-## Verification
-\`\`\`bash
-python -m compileall src  # ❌ This generates BAD tasks
-\`\`\`
-```
-
-**Solution:**
-- Keep PROJECT.md accurate
-- Test all commands in PROJECT.md
-- Use correct command names (`python3` not `python`)
-
----
-
-### Pitfall #11: Missing Dependencies
-
-**Problem:**
-```bash
 baseline_commands:
-  - composer install  # Fails if composer not in PATH
-```
-
-**Solution:**
-```bash
-# Set PATH in scripts/auto-coder-live.sh:
-export PATH="/usr/local/bin:/home/ubuntu/.local/bin:$PATH"
+  - python3.12 -m pytest tests/ -q
 ```
 
 ---
 
-### Pitfall #12: Protected Paths Too Broad
-
-**Problem:**
-```yaml
-protected_paths:
-  - src/  # Can't modify src/ at all
-```
-
-**Solution:**
-```yaml
-protected_paths:
-  - src/external_lib/  # Only protect specific subdirs
-```
-
----
-
-## 🧪 TESTING PITFALLS
-
-### Pitfall #13: Baseline Commands Fail
+### Bleedy #7: API key w wrong env var
 
 **Problem:**
 ```bash
-baseline_commands:
-  - ./vendor/bin/phpunit  # Fails: vendor not installed
+ANTHROPIC_AUTH_TOKEN=sk-ant-...  # ❌
 ```
+Ale auto-coder szuka `ANTHROPIC_API_KEY`.
 
-**Solution:**
-```bash
-baseline_commands:
-  - composer install      # Setup first
-  - ./vendor/bin/phpunit  # Then test
-```
+**Rozwiazanie:**
+Uzywaj `cc` backend (subskrypcja Claude Max) lub ustaw poprawna nazwe zmiennej.
 
 ---
 
-### Pitfall #14: Test Commands Wrong Directory
+## CHECKLIST PRZED PIERWSZYM RUNEM
 
-**Problem:**
-```bash
-completion_commands:
-  - ./vendor/bin/phpunit  # Wrong: not in plugin dir
-```
-
-**Solution:**
-```bash
-completion_commands:
-  - cd packages/wp-plugin/agency-elementor && ./vendor/bin/phpunit
-```
+- [ ] `PROJECT.md` ma `python3` nie `python`
+- [ ] `ROADMAP.md`, `PROJECT.md`, `CONSTRAINTS.md`, `PLANNING_HINTS.md`, `ARCHITECTURE_NOTES.md` istnieja
+- [ ] Po `auto-coder plan` sprawdz `tasks.yaml` — czy `allowed_paths` sa poprawne
+- [ ] `auto-coder doctor` bez bledow
+- [ ] `auto-coder doctor --probe-live` sukces (test managera)
+- [ ] Git remote ma uprawnienia do push (SSH key lub token)
+- [ ] Cron ma pelna sciezke do `auto-coder`
 
 ---
 
-## 🚀 DEPLOYMENT CHECKLIST
-
-Use this checklist when deploying auto-coder to a NEW repo:
-
-- [ ] 1. Check PROJECT.md commands (use `python3` not `python`)
-- [ ] 2. Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
-- [ ] 3. Update entry script to export API key
-- [ ] 4. Enable manager: `manager_enabled: true`
-- [ ] 5. Set manager_backend: `anthropic` or `codex`
-- [ ] 6. Configure worker with fallback
-- [ ] 7. Run `auto-coder doctor --probe-live`
-- [ ] 8. Test run: `auto-coder run`
-- [ ] 9. Install cron: `auto-coder install-cron "*/20 * * * *"`
-- [ ] 10. Monitor first run: `tail -f .auto-coder/cron.log`
-
----
-
-## 📊 QUICK REFERENCE
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `python: not found` | PROJECT.md has `python` | Change to `python3` |
-| `Manager backend unavailable` | `manager_enabled: false` | Set to `true` |
-| `auto-coder already running` | Stale lock | `rm .auto-coder/*.lock` |
-| Tasks stuck in quarantine | Repeated failures | Fix root + reset state |
-| Doctor FAIL but works | Wrong test environment | Ignore if cron works |
-| `ANTHROPIC_API_KEY` missing | Wrong var name | Export in script |
-
----
-
-## 🎓 GOLDEN RULES
-
-1. **ALWAYS use `python3`** - never `python`
-2. **Export API key in script** - don't rely on environment
-3. **Enable manager explicitly** - not enabled by default
-4. **Configure fallback** - Codex → Claude
-5. **Test baseline commands** - before running auto-coder
-6. **Fix quarantine immediately** - blocks everything
-7. **PROJECT.md is truth** - bugs here cascade everywhere
-
----
-
-## 🔄 EMERGENCY RESET
-
-If auto-coder is completely stuck:
+## EMERGENCY RESET
 
 ```bash
-# 1. Stop everything
+# Stop
 pkill -f auto-coder
 
-# 2. Clean locks
-rm -f .auto-coder/*.lock
+# Clean locks
+rm -f .auto-coder/runner.lock .auto-coder/cron.lock
 
-# 3. Reset state (LAST RESORT)
-rm -f .auto-coder/state.db .auto-coder/state.json
+# Reset state
+sqlite3 .auto-coder/state.db "DELETE FROM leases"
+sqlite3 .auto-coder/state.db "UPDATE run_ticks SET status='interrupted' WHERE status='running'"
 
-# 4. Fix root cause
-# Edit PROJECT.md, config, etc.
-
-# 5. Restart
-auto-coder run
+# Restart
+env -u CLAUDECODE auto-coder run --live
 ```
 
 ---
 
-**Last updated:** 2026-03-16
-**Contributors:** auto-coder community lessons learned
-
-**Found a new pitfall?** Please add it here to save others hours of debugging!
+**Ostatnia aktualizacja:** 2026-03-17 (rzeczywiste bledy z produkcji)

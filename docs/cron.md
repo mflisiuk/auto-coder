@@ -1,67 +1,139 @@
-# Cron & unattended mode
+# Cron i tryb autonomiczny
 
-`auto-coder` does not run as a daemon. You trigger it via an external scheduler (cron). Each invocation is a self-contained tick: pick a task, run it, save state, exit. The next invocation picks up from where the previous left off.
+Auto-coder nie jest daemonem. Uruchamiasz go przez zewnetrzny scheduler (cron). Kazde wywolanie to
+jednostkowy "tick": wybierz task, odpal, zapisz stan, wyjdz. Kolejne wywolanie kontynuuje od miejsca
+gdzie poprzednie skonczylo.
 
-## Why cron (not a persistent daemon)?
+## Dlaczego cron (nie daemon)?
 
-- **Quota exhaustion**: workers may hit API rate limits mid-execution. Cron gracefully resumes after cooldown without any process management.
-- **Multi-day projects**: tasks can take hours or days. A cron job restarting every 20 min is more resilient than a daemon that needs babysitting.
-- **Multi-repo**: easy to add/remove repos from crontab independently.
-- **Simplicity**: no PID files, no systemd services, no restart logic.
+- **Quota exhaustion:** worker moze trafic limit API w trakcie wykonywania. Cron wznowi po cooldown
+  bez zarzadzania procesem.
+- **Wielodniowe projekty:** taski moga trwac godziny. Cron co 20 min jest bardziej odporny niz daemon.
+- **Wiele repo:** latwe dodawanie/usuwanie repo z crontab.
+- **Prostota:** bez plikow PID, systemd unitow, logiki restartu.
 
-## Minimal cron (single repo)
-
-Every 20 minutes (recommended):
+## Produkcjyna konfiguracja crona (pelna, odporna na bledy)
 
 ```cron
-*/20 * * * * cd /path/to/repo && auto-coder run --live >> .auto-coder/cron.log 2>&1
+*/30 * * * * /usr/bin/flock -n /tmp/myrepo-autocoder.lock bash -c \
+  "cd /home/ubuntu/myrepo && rm -f .auto-coder/runner.lock && \
+   env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live" \
+   >> /home/ubuntu/myrepo/.auto-coder/cron.log 2>&1
 ```
+
+**Kluczowe elementy (po kole lekcje z boju):**
+
+| Element | Dlaczego jest potrzebne |
+|---------|------------------------|
+| `flock -n /tmp/...lock` | Zapobiega rownoczesnemu uruchomieniu dwoch instancji |
+| `bash -c "..."` | Pozwala na wielolinijkowe polecenie w crontab |
+| `cd /repo` | Auto-coder musi byc uruchomiony z katalogu projektu |
+| `rm -f runner.lock` | Czysci zombie lock po zabitym procesie |
+| `env -u CLAUDECODE` | Pozwala `claude`/`ccg` dzialac wewnatrz crona |
+| `~/.local/bin/auto-coder` | Pelna sciezka — cron ma ubogi PATH |
+| `>> cron.log 2>&1` | Loguje output do pliku (przydatne przy debugowaniu) |
+
+## Uproszczona konfiguracja (do testow)
+
+Jesli debugujesz i chcesz widziec output od razu:
+
+```cron
+*/20 * * * * cd /repo && env -u CLAUDECODE auto-coder run --live
+```
+
+Ryzyko: nie ma `flock` — moze sie uruchomic kilka instancji rownoczesnie.
+Ryzyko: nie ma `rm -f runner.lock` — zombie lock po zabitym procesie.
+
+## Interwaly
+
+| Interwal | Przypadek uzycia |
+|----------|-----------------|
+| 10-20 min | Rekomendowane. Szybka petla zwrotna. |
+| 30 min | Produkcyjny standard. Dobry balans. |
+| 60+ min | Konserwatywny. Jesli quota jest ciasny. |
 
 ## Multi-repo cron
 
+Kazde repo dziala niezaleznie:
+
 ```cron
-# Each repo runs independently every 20 min
-*/20 * * * * cd /home/user/repo-a && auto-coder run --live >> .auto-coder/cron.log 2>&1
-*/20 * * * * cd /home/user/repo-b && auto-coder run --live >> .auto-coder/cron.log 2>&1
-*/20 * * * * cd /home/user/repo-c && auto-coder run --live >> .auto-coder/cron.log 2>&1
+# Repo A: co 20 min
+*/20 * * * * /usr/bin/flock -n /tmp/repoa-lock bash -c "cd /home/repoa && rm -f .auto-coder/runner.lock && env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live" >> /home/repoa/.auto-coder/cron.log 2>&1
+
+# Repo B: co 30 min
+*/30 * * * * /usr/bin/flock -n /tmp/repob-lock bash -c "cd /home/repob && rm -f .auto-coder/runner.lock && env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live" >> /home/repob/.auto-coder/cron.log 2>&1
 ```
 
-Tip: use absolute paths for the auto-coder binary. Find it with `which auto-coder`.
+Kazde repo ma wlasny `flock` lock wiec nie blokuja sie nawzajem.
 
-## Interval recommendations
+## Alternatywa: loop mode (zamiast crona)
 
-| Interval | Use case |
-|---|---|
-| 10-20 min | Recommended. Fast feedback loop, good quota utilization. |
-| 30-60 min | Conservative. Good if you want to review output before next tick. |
-| > 60 min | Only if quota is very tight or you run occasional jobs. |
-
-## Good practices
-
-1. Start with `dry_run: true` — confirm tasks look correct before going live
-2. Enable `auto_commit: true` before `auto_push: true`
-3. Enable `auto_pr: true` before `auto_merge: true`
-4. Keep `review_required: true` during initial rollout — disable only when you trust the setup
-5. Always log cron output to `.auto-coder/cron.log`
-6. Run `auto-coder doctor --probe-live` manually before first live run
-
-## Monitoring
-
-```bash
-# Watch live log
-tail -f /path/to/repo/.auto-coder/cron.log
-
-# Check PROGRESS.md on GitHub — it's updated after every tick
-# Or locally:
-cat /path/to/repo/PROGRESS.md
-```
-
-## Loop mode (alternative to cron)
-
-If you prefer a single long-running process instead of cron:
+Jesli wolisz jeden dlugo dzialajacy proces:
 
 ```bash
 auto-coder run --live --loop --max-ticks 200
 ```
 
-This runs ticks continuously until all tasks complete, then exits cleanly. Useful for short projects or CI pipelines.
+Dziala az wszystkie taski zostana ukonczone, potem wychodzi czysto.
+Przydatne dla krotkich projektow lub CI.
+
+Ale uwaga: jesli proces zostanie zabity, bedziesz musial recznie zrestartowac.
+Cron jest bezpieczniejszy — samo sie odbuduje po zabiciu procesu.
+
+## Monitoring
+
+```bash
+# Zobacz live log
+tail -f /path/to/repo/.auto-coder/cron.log
+
+# Sprawdz PROGRESS.md (aktualizowane po kazdym ticku)
+cat /path/to/repo/PROGRESS.md
+# Lub na GitHub — commitowany po kazdym tasku
+```
+
+## Debugowanie crona
+
+Jesli cron nie dziala:
+
+1. **Sprawdz sciezke do `auto-coder`:**
+   ```bash
+   which auto-coder  # np. /home/ubuntu/.local/bin/auto-coder
+   ```
+
+2. **Test reczny (bez crona):**
+   ```bash
+   cd /repo && env -u CLAUDECODE /home/ubuntu/.local/bin/auto-coder run --live
+   ```
+
+3. **Sprawdz log:**
+   ```bash
+   tail -50 /repo/.auto-coder/cron.log
+   ```
+
+4. **Sprawdz czy `flock` nie blokuje:**
+   ```bash
+   ls -la /tmp/myrepo-autocoder.lock  # lock powinien byc usuniety po zakonczeniu
+   ```
+
+## Typowe bledy
+
+| Bled | Przyczyna | Rozwiazanie |
+|------|-----------|-------------|
+| `auto-coder: not found` | Cron nie ma `auto-coder` w PATH | Uzyj pelnej sciezki |
+| `already running` | Zombie `runner.lock` | Dodaj `rm -f .auto-coder/runner.lock` |
+| `Manager backends unavailable` | Cron nie ma `claude` w PATH | Kod auto-coder v1.0.5+ to naprawia |
+| `Task already leased` | Stale lease po przerwanym runie | Kod v1.0.5+ usuwa lease automatycznie |
+
+## Pierwsze uruchomienie
+
+Zanim dodasz do crona:
+
+1. `auto-coder plan` — generuj backlog
+2. `auto-coder doctor --probe-live` — sprawdz czy wszystko dziala
+3. `auto-coder run --live` — jeden run testowy
+4. Dopiero dodaj do crona
+
+---
+
+**Ostatnia aktualizacja:** 2026-03-17
+**Na podstawie prawdziwych wdrozen w produkcji**
