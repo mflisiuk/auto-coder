@@ -19,6 +19,8 @@ REPORTS_DIR = "reports"
 SUPPORTED_WORKERS = {"cc", "cch", "ccg", "codex", "qwen", "gemini"}
 DEFAULT_MANAGER_MODELS = {
     "anthropic": "claude-opus-4-6",
+    "cc": "claude-opus-4-6",
+    "claude": "claude-opus-4-6",
     "codex": "gpt-5",
 }
 
@@ -43,7 +45,7 @@ def resolve_manager_model(
     manager_backend: str,
     configured_model: str | None,
 ) -> str:
-    backend = str(manager_backend or "anthropic").strip().lower()
+    backend = str(manager_backend or "cc").strip().lower()
     default_model = DEFAULT_MANAGER_MODELS.get(backend, DEFAULT_MANAGER_MODELS["anthropic"])
     if not configured_model:
         return default_model
@@ -86,12 +88,12 @@ def default_config(project_root: Path) -> dict[str, Any]:
         "auto_merge": False,
         "review_required": True,
         "manager_enabled": True,
-        "manager_backend": "anthropic",
+        "manager_backend": "cc",
         "manager_model": DEFAULT_MANAGER_MODELS["anthropic"],
         "manager_timeout_seconds": 180,
         "codex_reasoning_effort": "medium",
-        "default_worker": "cc",
-        "fallback_worker": "cch",
+        "default_worker": "ccg",
+        "fallback_worker": "cc",
         "setup_commands": [],
         "allowed_paths": [],
         "protected_paths": [],
@@ -182,22 +184,22 @@ test_timeout_minutes: 20
 quota_cooldown_hours: 4
 
 # Git automation (all false = safe defaults; set to true for full autonomy)
-auto_commit: false
-auto_push: false
+auto_commit: true
+auto_push: true
 auto_pr: false          # create a GitHub PR after push (requires gh CLI)
-auto_merge: false       # auto-merge the PR after creation (requires gh CLI)
+auto_merge: true        # direct merge to base_branch when auto_pr=false
 
 # Review / manager
 review_required: true
 manager_enabled: true
-manager_backend: anthropic
-manager_model: ""        # empty = backend-specific default (anthropic=claude-opus-4-6, codex=gpt-5)
+manager_backend: cc      # uses Claude Code subscription (no API key needed)
+manager_model: ""        # empty = backend-specific default (claude-opus-4-6)
 manager_timeout_seconds: 180
 codex_reasoning_effort: medium
 
 # Default worker CLI and fallback
-default_worker: cc
-fallback_worker: cch
+default_worker: ccg      # uses Claude Code with Google subscription
+fallback_worker: cc
 
 # Commands run in every fresh worktree before baseline/completion commands
 setup_commands: []
