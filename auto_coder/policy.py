@@ -1,8 +1,79 @@
 """Execution policy helpers."""
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
+
+
+# Pytest -k expressions use Python boolean operators, not regex.
+# Common mistakes: using | instead of 'or', & instead of 'and'
+PYTEST_K_REGEX_OPERATORS = re.compile(r"-k\s*['\"][^'\"]*\|[^'\"]*['\"]")
+PYTEST_K_FIXES = [
+    (re.compile(r"\|"), " or "),
+    (re.compile(r"&"), " and "),
+    (re.compile(r"!"), " not "),
+]
+
+
+def validate_pytest_k_syntax(commands: list[str]) -> list[str]:
+    """Validate pytest -k expressions for common syntax errors.
+
+    Pytest's -k option uses Python boolean expressions, not regex.
+    Common mistake: using | instead of 'or', & instead of 'and'.
+
+    Returns list of warnings for commands with invalid syntax.
+    """
+    warnings: list[str] = []
+    for cmd in commands:
+        if "pytest" not in cmd:
+            continue
+        if "-k" not in cmd:
+            continue
+
+        # Check for regex operators in -k expression
+        if PYTEST_K_REGEX_OPERATORS.search(cmd):
+            # Extract the -k expression for the warning
+            match = re.search(r"-k\s*['\"]([^'\"]+)['\"]", cmd)
+            expr = match.group(1) if match else "<unknown>"
+            warnings.append(
+                f"pytest -k expression uses regex syntax: '{expr}'. "
+                f"Use 'or' instead of '|', 'and' instead of '&', 'not' instead of '!'."
+            )
+    return warnings
+
+
+def fix_pytest_k_syntax(commands: list[str]) -> list[str]:
+    """Auto-fix common pytest -k syntax errors.
+
+    Converts regex operators to Python boolean operators:
+    - | -> or
+    - & -> and
+    - ! -> not (at start of word)
+    """
+    fixed: list[str] = []
+    for cmd in commands:
+        if "pytest" not in cmd or "-k" not in cmd:
+            fixed.append(cmd)
+            continue
+
+        # Find and fix the -k expression
+        def replace_expr(m: re.Match) -> str:
+            expr = m.group(1)
+            original = expr
+            for pattern, replacement in PYTEST_K_FIXES:
+                expr = pattern.sub(replacement, expr)
+            # Clean up extra spaces
+            expr = re.sub(r"\s+", " ", expr).strip()
+            if expr != original:
+                pass  # Was fixed
+            return f"-k '{expr}'"
+
+        # Match -k followed by quoted expression
+        cmd_fixed = re.sub(r"-k\s*['\"]([^'\"]+)['\"]", replace_expr, cmd)
+        fixed.append(cmd_fixed)
+
+    return fixed
 
 
 def _normalize_prefix(prefix: str) -> str:

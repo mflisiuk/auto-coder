@@ -721,6 +721,7 @@ from auto_coder.git_ops import git as _git_impl
 from auto_coder.git_ops import remove_worktree as _remove_worktree_impl
 from auto_coder.git_ops import resolve_worktree_base_ref as _resolve_worktree_base_ref_impl
 from auto_coder.policy import validate_baseline_spec, validate_changed_files as _validate_changed_files_impl
+from auto_coder.policy import validate_pytest_k_syntax, fix_pytest_k_syntax
 from auto_coder.reports import ensure_dir as _ensure_impl
 from auto_coder.reports import load_json as _load_json_impl
 from auto_coder.reports import read_text as _read_impl
@@ -1167,6 +1168,18 @@ def run_one_task(
         baseline_commands = _baseline_commands(task)
         for warning in validate_baseline_spec(task, project_root):
             print(f"[task-spec WARNING] {warning}")
+        # Validate and auto-fix pytest -k syntax (| -> or, & -> and)
+        k_warnings = validate_pytest_k_syntax(baseline_commands)
+        for warning in k_warnings:
+            print(f"[pytest-k WARNING] {warning}")
+            print(f"[pytest-k AUTO-FIX] Applying automatic correction...")
+        if k_warnings:
+            baseline_commands = fix_pytest_k_syntax(baseline_commands)
+            # Also fix in task dict so repair task gets correct commands
+            if "baseline_commands" in task:
+                task["baseline_commands"] = baseline_commands
+            elif "test_commands" in task:
+                task["test_commands"] = baseline_commands
         baseline_ok, baseline_results = run_tests(
             baseline_commands, worktree, report_dir,
             config["test_timeout_minutes"], prefix="baseline-tests",
