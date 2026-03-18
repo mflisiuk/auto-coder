@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-03-18] - Auto-Validate and Fix Pytest -k Syntax
+### Co się zmieniło
+- **Dodano `validate_pytest_k_syntax()`** w `policy.py` — wykrywa typowe błędy składniowe w wyrażeniach pytest `-k` (użycie `|`, `&`, `!` zamiast `or`, `and`, `not`)
+- **Dodano `fix_pytest_k_syntax()`** w `policy.py` — automatycznie naprawia wykryte błędy zamieniając operatory regex na operatory Pythona
+- **Zintegrowano walidację z `run_one_task()`** w `orchestrator.py` — przed uruchomieniem baseline testów sprawdzana jest składnia `-k` i automatycznie aplikowane są poprawki
+- **Dodano logowanie ostrzeżeń** — komunikaty `[pytest-k WARNING]` i `[pytest-k AUTO-FIX]` informują o wykrytych problemach i naprawach
+
+### Poprawki błędów
+- Naprawiono błędy uruchomieniowe pytest gdy w task-spec użyto składni regex (`test_a|test_b`) zamiast Python boolean expressions (`test_a or test_b`)
+- Naprawiono konieczność ręcznej korekty tasków — teraz system sam wykrywa i naprawia typowe pomyłki składniowe
+
 ## [2026-03-18] - Pytest Exit Code 5 Handling
 ### Co się zmieniło
 - **Dodano stałą `PYTEST_NO_TESTS_COLLECTED = 5`** w `executor.py` — jawna definicja exit code pytest oznaczającego "brak testów do uruchomienia"

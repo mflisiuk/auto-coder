@@ -46,6 +46,7 @@ auto-coder run --live
 - **Baseline validation** — walidacja task-spec dla komend baseline, ostrzeżenia dla plików jeszcze nieistniejących
 - **Wildcard allowed_paths** — `**` lub `*` w konfiguracji zezwala na wszystkie ścieżki
 - **Pytest exit code 5** — traktuje "no tests collected" jako pass dla baseline/setup runs
+- **Auto-fix pytest -k** — automatycznie naprawia składnię `-k` (| → or, & → and, ! → not)
 
 ## Dokumentacja
 
