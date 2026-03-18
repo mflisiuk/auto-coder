@@ -1,97 +1,108 @@
-# Execution Core
+# Execution Engine
 
-## Co robi jeden tick
+Ten dokument opisuje jak `auto-coder` wykonuje testy i interpretuje wyniki.
 
-`auto-coder run` uruchamia dokładnie jeden tick workflow.
+## Uruchamianie testów
 
-Przepływ:
+Funkcja `run_tests()` w `executor.py` odpowiada za wykonywanie komend testowych w izolowanym worktree.
 
-1. recovery przerywanych runów i wygasłych lease'ów
-2. wybór taska przez scheduler
-3. utworzenie albo wznowienie work ordera
-4. wybór workera przez router
-5. utworzenie git worktree
-6. odpalenie `setup_commands` z configu i/lub taska
-7. odpalenie `baseline_commands`
-8. reset tracked files do `HEAD`, żeby baseline/setup side effects nie mieszały się z diffem workera
-9. uruchomienie workera CLI
-10. odczyt `AGENT_REPORT.json`
-11. policy checks na changed files
-12. odpalenie `completion_commands`
-13. deterministic review
-14. manager review
-15. commit / push jeśli włączone
-16. zapis attemptu, run ticku i artefaktów
+### Parametry
 
-## Obowiązkowy raport workera
+```python
+def run_tests(
+    commands: list[str],
+    worktree: Path,
+    report_dir: Path,
+    timeout_minutes: int,
+    *,
+    prefix: str = "tests",
+    skip_no_tests: bool = False,
+) -> tuple[bool, list[dict[str, Any]]]:
+```
 
-Worker ma zostawić `AGENT_REPORT.json` w katalogu raportu próby.
+- `commands` — lista komend do uruchomienia (zwykle pytest)
+- `worktree` — ścieżka do izolowanego worktree git
+- `report_dir` — gdzie zapisać logi i raporty JSON
+- `timeout_minutes` — timeout na każdą komendę
+- `prefix` — prefiks dla plików raportów (np. `setup-tests`, `baseline-tests`)
+- `skip_no_tests` — czy traktować exit code 5 jako sukces
 
-Minimalny kontrakt:
+### Exit codes pytest
 
+| Code | Znaczenie | Domyślna interpretacja |
+|------|-----------|------------------------|
+| 0 | Wszystkie testy przeszły | ✅ PASS |
+| 1-4 | Różne błędy testów | ❌ FAIL |
+| 5 | No tests collected | ⚠️ Zależne od kontekstu |
+
+### Handling exit code 5 (No Tests Collected)
+
+Exit code 5 oznacza, że pytest nie znalazł żadnych testów do uruchomienia. Interpretacja zależy od kontekstu:
+
+**Setup/Baseline tests:** ✅ PASS (gdy `skip_no_tests=True`)
+- Task może tworzyć pliki z testami od zera
+- Brak istniejących testów jest oczekiwany
+- Parametr `skip_no_tests=True` jest domyślnie ustawiony dla setup i baseline
+
+**Task tests:** ❌ FAIL (gdy `skip_no_tests=False`)
+- Task powinien utworzyć testy
+- Brak testów oznacza niezrealizowane zadanie
+
+### Przykład użycia w orchestratorze
+
+```python
+# Setup tests - skip_no_tests=True domyślnie
+setup_ok, setup_results = run_tests(
+    setup_commands, worktree, report_dir,
+    config["test_timeout_minutes"], prefix="setup-tests",
+    skip_no_tests=True,  # brak testów = OK
+)
+
+# Baseline tests - skip_no_tests=True domyślnie
+baseline_ok, baseline_results = run_tests(
+    baseline_commands, worktree, report_dir,
+    config["test_timeout_minutes"], prefix="baseline-tests",
+    skip_no_tests=True,  # brak testów = OK
+)
+```
+
+### Struktura raportu
+
+Po uruchomieniu testów tworzone są:
+
+```
+report_dir/
+├── {prefix}/
+│   ├── test-00.stdout.log
+│   ├── test-00.stderr.log
+│   └── ...
+└── {prefix}.json
+```
+
+Format JSON:
 ```json
 {
-  "status": "completed | partial | blocked | quota_exhausted",
-  "summary": "Short summary of what was done",
-  "completed_items": ["..."],
-  "remaining_items": ["..."],
-  "blockers": ["..."],
-  "tests_run": ["..."],
-  "files_touched": ["..."],
-  "next_recommended_step": "..."
+  "passed": true,
+  "results": [
+    {
+      "index": 0,
+      "command": "pytest -xvs tests/",
+      "returncode": 0,
+      "passed": true,
+      "skipped_no_tests": false
+    }
+  ]
 }
 ```
 
-Brak raportu nie kończy taska sukcesem. Próba trafia do retry/block flow.
+### Debugowanie
 
-## Deterministic gates
+Logi stdout/stderr każdej komendy są zapisywane w `report_dir/{prefix}/`. Przy błędach:
 
-Przed manager review system sprawdza:
+```bash
+# Sprawdź stderr ostatniego testu
+cat reports/baseline-tests/test-00.stderr.log
 
-- changed files mieszczą się w `allowed_paths`
-- nic nie dotknęło `protected_paths`
-- `completion_commands` przeszły
-- diff istnieje i nie jest pustą próbą
-
-To jest twarda bramka. LLM review nie zastępuje testów ani policy.
-
-## Retry i quota
-
-Retryable statusy obejmują m.in.:
-
-- `agent_failed`
-- `agent_report_missing`
-- `no_changes`
-- `policy_failed`
-- `tests_failed`
-- `review_failed`
-- `quota_exhausted`
-
-`quota_exhausted` trafia do osobnego stanu taska:
-
-- `waiting_for_quota`
-
-To pozwala schedulerowi wrócić do taska po cooldownie zamiast traktować go jak zwykły fail.
-
-## Worktree i artefakty
-
-Każda próba działa w osobnym worktree pod:
-
-```text
-.auto-coder/worktrees/
+# Sprawdź exit code
+cat reports/baseline.json | jq '.results[].returncode'
 ```
-
-Artefakty trafiają do:
-
-```text
-.auto-coder/reports/<run-id>/
-```
-
-Typowe pliki:
-
-- stdout/stderr workera
-- stdout/stderr testów
-- `AGENT_REPORT.json`
-- `baseline.json`
-- `completion.json`
-- diff i metadata próby

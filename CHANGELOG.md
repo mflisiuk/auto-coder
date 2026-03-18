@@ -1,5 +1,14 @@
 # Changelog
 
+## [2026-03-18] - Pytest Exit Code 5 Handling
+### Co się zmieniło
+- **Dodano stałą `PYTEST_NO_TESTS_COLLECTED = 5`** w `executor.py` — jawna definicja exit code pytest oznaczającego "brak testów do uruchomienia"
+- **Rozszerzono `run_tests()`** o parametr `skip_no_tests: bool = False` — pozwala traktować exit code 5 jako sukces
+- **Zaktualizowano `orchestrator.py`** — setup i baseline testy używają `skip_no_tests=True` domyślnie
+
+### Poprawki błędów
+- Naprawiono błędne oznaczanie tasków jako failed gdy pytest nie znalazł testów (exit 5) — dla baseline/setup runs jest to oczekiwane zachowanie (testy mają zostać utworzone przez task)
+
 ## [2026-03-17] - Wildcard Support in Allowed Paths
 ### Co się zmieniło
 - **Dodano obsługę wildcardów** w `policy.py` — `**` lub `*` w `allowed_paths` zezwala na wszystkie ścieżki bez sprawdzania prefiksów
