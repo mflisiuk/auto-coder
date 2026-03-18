@@ -9,6 +9,12 @@ from typing import Any
 from auto_coder.reports import ensure_dir, save_json, write_text
 
 
+# pytest exit code 5 means "no tests were collected".
+# For baseline runs this is not a failure — it means the tests don't exist yet
+# and the current task is expected to create them.
+PYTEST_NO_TESTS_COLLECTED = 5
+
+
 def run_tests(
     commands: list[str],
     worktree: Path,
@@ -16,6 +22,7 @@ def run_tests(
     timeout_minutes: int,
     *,
     prefix: str = "tests",
+    skip_no_tests: bool = False,
 ) -> tuple[bool, list[dict[str, Any]]]:
     results: list[dict[str, Any]] = []
     all_passed = True
@@ -33,6 +40,8 @@ def run_tests(
             timeout=timeout_minutes * 60,
             check=False,
         )
+        no_tests = result.returncode == PYTEST_NO_TESTS_COLLECTED
+        passed = result.returncode == 0 or (skip_no_tests and no_tests)
         write_text(report_dir / prefix / f"test-{index:02d}.stdout.log", result.stdout)
         write_text(report_dir / prefix / f"test-{index:02d}.stderr.log", result.stderr)
         results.append(
@@ -40,10 +49,11 @@ def run_tests(
                 "index": index,
                 "command": cmd,
                 "returncode": result.returncode,
-                "passed": result.returncode == 0,
+                "passed": passed,
+                "skipped_no_tests": no_tests and skip_no_tests,
             }
         )
-        if result.returncode != 0:
+        if not passed:
             all_passed = False
 
     save_json(report_dir / f"{prefix}.json", {"passed": all_passed, "results": results})

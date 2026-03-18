@@ -1098,6 +1098,7 @@ def run_one_task(
             setup_ok, setup_results = run_tests(
                 setup_commands, worktree, report_dir,
                 config["test_timeout_minutes"], prefix="setup-tests",
+                skip_no_tests=True,
             )
             if not setup_ok:
                 failure_summary = _summarize_test_failures(report_dir, "setup-tests", setup_results)
@@ -1169,6 +1170,7 @@ def run_one_task(
         baseline_ok, baseline_results = run_tests(
             baseline_commands, worktree, report_dir,
             config["test_timeout_minutes"], prefix="baseline-tests",
+            skip_no_tests=True,
         )
         if not baseline_ok:
             failure_summary = _summarize_test_failures(report_dir, "baseline-tests", baseline_results)
