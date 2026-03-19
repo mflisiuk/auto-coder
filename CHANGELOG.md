@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-03-19] - Auto-Generated Artifacts Ignore Policy
+### Co się zmieniło
+- **Dodano `IGNORED_PATTERNS`** w `policy.py` — lista wzorców plików auto-generowanych (`__pycache__`, `.pyc`, `.pyo`, `.pyd`, `.so`, `.dll`, `.egg-info`)
+- **Dodano `_should_ignore()`** w `policy.py` — funkcja sprawdzająca czy ścieżka pasuje do wzorców ignorowanych
+- **Zaktualizowano `validate_changed_files()`** — pomija pliki auto-generowane przed walidacją protected/allowed paths
+
+### Poprawki błędów
+- Naprawiono błędne flagowanie plików `__pycache__` i innych artifactów jako naruszenia protected paths
+- Naprawiono konieczność ręcznego dodawania wyjątków dla auto-generowanych plików w konfiguracji policy
+
 ## [2026-03-19] - YAML Validation Command
 ### Co się zmieniło
 - **Dodano `safe_load_yaml()`** w `cli.py` — bezpieczne ładowanie YAML z pomocnymi komunikatami błędów dla typowych problemów (niezacytowane stringi z backtickami, dwukropkami, błędy indentacji)
