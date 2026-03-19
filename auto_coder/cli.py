@@ -44,6 +44,89 @@ from auto_coder.storage import (
 from auto_coder.brief_validator import validate_project_brief
 
 
+# ═══════════════════════════════════════════════════════════════════════ YAML helpers
+
+def safe_load_yaml(path: Path, *, context: str = "YAML file") -> dict[str, Any]:
+    """
+    Safely load YAML with helpful error messages for common issues.
+
+    Common YAML issues caught:
+    - Unquoted strings with backticks (`)
+    - Unquoted strings with colons (:)
+    - Invalid indentation
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+        return yaml.safe_load(content) or {}
+    except yaml.scanner.ScannerError as e:
+        print(f"FAIL: YAML syntax error in {path}")
+        print(f"  {e}")
+        print()
+        print("Common fixes:")
+        print("  - Quote strings containing backticks: `value` → \"`value`\"")
+        print("  - Quote strings containing colons: key: value → \"key: value\"")
+        print(f"  - Check line {e.problem_mark.line + 1 if hasattr(e, 'problem_mark') else '?'}")
+        raise
+    except yaml.parser.ParserError as e:
+        print(f"FAIL: YAML parse error in {path}")
+        print(f"  {e}")
+        raise
+    except Exception as e:
+        print(f"FAIL: Could not load {context} from {path}: {e}")
+        raise
+
+
+def validate_tasks_yaml(path: Path) -> tuple[bool, list[str]]:
+    """
+    Validate tasks.yaml structure and content.
+    Returns (is_valid, list_of_issues).
+    """
+    issues: list[str] = []
+
+    if not path.exists():
+        return False, [f"File not found: {path}"]
+
+    try:
+        raw = safe_load_yaml(path, context="tasks.yaml")
+    except Exception:
+        return False, [f"YAML parsing failed"]
+
+    if not isinstance(raw, dict):
+        return False, ["Root must be a mapping with 'tasks' key"]
+
+    tasks = raw.get("tasks", [])
+    if not isinstance(tasks, list):
+        return False, ["'tasks' must be a list"]
+
+    if not tasks:
+        issues.append("Warning: tasks list is empty")
+
+    seen_ids: set[str] = set()
+    for i, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            issues.append(f"Task #{i+1}: must be a mapping")
+            continue
+
+        task_id = task.get("id")
+        if not task_id:
+            issues.append(f"Task #{i+1}: missing 'id' field")
+        elif task_id in seen_ids:
+            issues.append(f"Task '{task_id}': duplicate id")
+        else:
+            seen_ids.add(str(task_id))
+
+        # Check for unquoted backticks in string fields (common issue)
+        for key, value in task.items():
+            if isinstance(value, str) and "`" in value and not value.startswith(("'", '"')):
+                issues.append(f"Task '{task_id}': field '{key}' contains backticks - should be quoted")
+            if isinstance(value, list):
+                for j, item in enumerate(value):
+                    if isinstance(item, str) and "`" in item and not item.startswith(("'", '"')):
+                        issues.append(f"Task '{task_id}': {key}[{j}] contains backticks - should be quoted")
+
+    return len([i for i in issues if not i.startswith("Warning:")]) == 0, issues
+
+
 # ═══════════════════════════════════════════════════════════════════════ commands
 
 def _load_runtime_state(config: dict[str, Any]) -> dict[str, Any]:
@@ -408,7 +491,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Run: auto-coder plan")
         return 1
 
-    raw = yaml.safe_load(tasks_path.read_text(encoding="utf-8")) or {}
+    raw = safe_load_yaml(tasks_path, context="tasks.yaml")
     yaml_tasks = list(raw.get("tasks", []))
     if not yaml_tasks:
         print("tasks.yaml has no tasks.")
@@ -735,6 +818,41 @@ def cmd_install_systemd(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Validate tasks.yaml syntax and structure."""
+    try:
+        project_root = find_project_root()
+        config = load_config(project_root)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+
+    tasks_path = config["tasks_path"]
+    print(f"Validating: {tasks_path}")
+    print()
+
+    is_valid, issues = validate_tasks_yaml(tasks_path)
+
+    if is_valid and not issues:
+        print("OK: tasks.yaml is valid")
+        return 0
+
+    if issues:
+        print(f"Found {len(issues)} issue(s):")
+        for issue in issues:
+            prefix = "  WARN " if issue.startswith("Warning:") else "  ERROR"
+            print(f"{prefix} {issue}")
+
+    if is_valid:
+        print()
+        print("OK: tasks.yaml is valid (with warnings)")
+        return 0
+    else:
+        print()
+        print("FAIL: tasks.yaml has errors")
+        return 1
+
+
 # ═══════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -826,6 +944,9 @@ def main() -> None:
     p_install_systemd.add_argument("interval_minutes", type=int, help="Tick interval in minutes")
     p_install_systemd.add_argument("--write-only", action="store_true", help="Only write files; do not enable timer")
 
+    # validate
+    sub.add_parser("validate", help="Validate tasks.yaml syntax and structure")
+
     args = parser.parse_args()
 
     handlers = {
@@ -846,5 +967,6 @@ def main() -> None:
         "go-live": cmd_go_live,
         "install-cron": cmd_install_cron,
         "install-systemd": cmd_install_systemd,
+        "validate": cmd_validate,
     }
     sys.exit(handlers[args.command](args))
