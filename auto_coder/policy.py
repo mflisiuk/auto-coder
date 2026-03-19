@@ -137,6 +137,27 @@ def validate_baseline_spec(task: dict, repo_root: Path) -> list[str]:
     return warnings
 
 
+# Paths that should always be ignored (auto-generated, never committed)
+IGNORED_PATTERNS = [
+    "__pycache__",
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".so",
+    ".dll",
+    ".egg-info",
+]
+
+
+def _should_ignore(path: str) -> bool:
+    """Check if path should be ignored (auto-generated artifacts)."""
+    norm = path.replace("\\", "/")
+    for pattern in IGNORED_PATTERNS:
+        if pattern in norm:
+            return True
+    return False
+
+
 def validate_changed_files(
     files: list[str],
     *,
@@ -145,6 +166,9 @@ def validate_changed_files(
 ) -> list[str]:
     violations: list[str] = []
     for path in files:
+        # Skip auto-generated artifacts that should never be committed
+        if _should_ignore(path):
+            continue
         if path_under(path, protected_paths):
             violations.append(f"protected:{path}")
         elif allowed_paths and not path_under(path, allowed_paths):
