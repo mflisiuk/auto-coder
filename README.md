@@ -42,6 +42,7 @@ auto-coder run --live
 - **Fallback Chain** — automatyczne przełączanie przy błędach kwotowych: `ccg` → `cc` → `cch` → `gemini` → `qwen` → `codex`
 - **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów (domyślnie włączone)
 - **Progress tracking** — `PROGRESS.md` i `work_progress.md` z emoji statusami
+- **YAML validation** — walidacja `tasks.yaml` z podpowiedziami błędów — [Walidacja YAML](docs/yaml-validation.md)
 - **Repair tasks** — automatyczne zadania naprawcze gdy baseline testy nie przejdą
 - **Baseline validation** — walidacja task-spec dla komend baseline, ostrzeżenia dla plików jeszcze nieistniejących
 - **Wildcard allowed_paths** — `**` lub `*` w konfiguracji zezwala na wszystkie ścieżki
@@ -57,6 +58,7 @@ auto-coder run --live
 - [Provider routing](docs/provider-routing.md)
 - [Operator runbook](docs/operator-runbook.md)
 - [Typowe problemy](docs/common-pitfalls.md)
+- [Walidacja YAML](docs/yaml-validation.md)
 
 ## Changelog
 

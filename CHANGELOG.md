@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-03-19] - YAML Validation Command
+### Co się zmieniło
+- **Dodano `safe_load_yaml()`** w `cli.py` — bezpieczne ładowanie YAML z pomocnymi komunikatami błędów dla typowych problemów (niezacytowane stringi z backtickami, dwukropkami, błędy indentacji)
+- **Dodano `validate_tasks_yaml()`** w `cli.py` — walidacja struktury i zawartości `tasks.yaml` (sprawdzenie duplikatów ID, brakujących pól, niezacytowanych backticków)
+- **Dodano komendę `auto-coder validate`** — CLI command do walidacji plików YAML projektu
+- **Zintegrowano walidację z flow** — automatyczne ostrzeżenia przy typowych błędach YAML
+
+### Poprawki błędów
+- Naprawiono konieczność ręcznego debugowania błędów YAML — teraz system podpowiada konkretne linie i rozwiązania
+- Naprawiono brak walidacji duplikatów ID w taskach — teraz wykrywane i raportowane
+
 ## [2026-03-18] - Auto-Validate and Fix Pytest -k Syntax
 ### Co się zmieniło
 - **Dodano `validate_pytest_k_syntax()`** w `policy.py` — wykrywa typowe błędy składniowe w wyrażeniach pytest `-k` (użycie `|`, `&`, `!` zamiast `or`, `and`, `not`)
