@@ -66,6 +66,24 @@ class TestQuotaDetection(unittest.TestCase):
         stderr = "Error: 429 Too Many Requests; insufficient_quota"
         self.assertTrue(is_quota_error(stderr, "", returncode=1))
 
+    def test_detects_hit_your_limit_in_json_with_nonzero_returncode(self):
+        # Claude Code returns JSON with is_error:true and "hit your limit" message
+        # It may exit with non-zero returncode
+        stdout = '''🤖 Claude Code (Anthropic)
+{"type":"result","subtype":"success","is_error":true,"result":"You\\'ve hit your limit · resets 7am (UTC)"}'''
+        self.assertTrue(is_quota_error("", stdout, returncode=1))
+
+    def test_detects_hit_your_limit_in_json_with_zero_returncode(self):
+        # Also test with returncode=0 (original case)
+        stdout = '''🤖 Claude Code (Anthropic)
+{"type":"result","is_error":true,"result":"usage limit reached"}'''
+        self.assertTrue(is_quota_error("", stdout, returncode=0))
+
+    def test_detects_rate_limit_text_in_stderr(self):
+        # Fallback: text-based detection
+        stderr = "Error: rate limit exceeded"
+        self.assertTrue(is_quota_error(stderr, "", returncode=1))
+
 
 class TestWorkerCommands(unittest.TestCase):
     def test_codex_command_skips_git_repo_check(self):

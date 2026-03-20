@@ -114,32 +114,32 @@ def extract_token_usage(stdout: str) -> int:
 
 def is_quota_error(stderr: str, stdout: str, *, returncode: int | None = None) -> bool:
     """Detect genuine quota/rate-limit failures from agent output."""
-    # Claude Code (cc/cch) exits with code 0 but sets is_error:true in JSON
-    # when the subscription limit is hit — check that case first.
-    if returncode == 0:
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                parsed = json.loads(line)
-            except Exception:
-                continue
-            if parsed.get("is_error") and parsed.get("result"):
-                result_text = str(parsed["result"]).lower()
-                quota_phrases = (
-                    "hit your limit",
-                    "usage limit",
-                    "resets",
-                    "rate limit",
-                    "too many requests",
-                    "quota",
-                    "overloaded",
-                )
-                if any(phrase in result_text for phrase in quota_phrases):
-                    return True
-        return False
+    # Always try to parse JSON output regardless of returncode.
+    # Claude Code (cc/cch/ccg) may set is_error:true in JSON with any returncode.
+    quota_phrases = (
+        "hit your limit",
+        "usage limit",
+        "rate limit",
+        "too many requests",
+        "quota",
+        "overloaded",
+        "subscription limit",
+        "limit reached",
+    )
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            continue
+        if parsed.get("is_error") and parsed.get("result"):
+            result_text = str(parsed["result"]).lower()
+            if any(phrase in result_text for phrase in quota_phrases):
+                return True
 
+    # Fallback: check for common error patterns in stderr/stdout text.
     text = f"{stderr}\n{stdout}".lower()
     patterns = (
         r"\b429\b",
@@ -149,5 +149,7 @@ def is_quota_error(stderr: str, stdout: str, *, returncode: int | None = None) -
         r"billing_hard_limit",
         r"quota(?:\s+has\s+been)?\s+(?:exceeded|exhausted|reached)",
         r"\boverloaded\b",
+        r"hit\s+(?:your\s+)?limit",
+        r"subscription\s+limit",
     )
     return any(re.search(pattern, text) for pattern in patterns)
