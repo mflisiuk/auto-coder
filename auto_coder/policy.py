@@ -146,6 +146,9 @@ IGNORED_PATTERNS = [
     ".so",
     ".dll",
     ".egg-info",
+    ".coverage",
+    ".pytest_cache",
+    "htmlcov/",
 ]
 
 
