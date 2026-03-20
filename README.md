@@ -9,7 +9,7 @@
 **Kluczowe właściwości:**
 - Domyślnie używa **Claude Code subscription** (manager: `cc`, worker: `ccg`) — nie wymaga API key
 - Jedna instalacja działa dla dowolnej liczby repozytoriów
-- Błędy kwotowe (429) nie są zaliczane jako failure — system czeka na reset kwoty
+- Błędy kwotowe (429, "hit your limit") nie są zaliczane jako failure — system czeka na reset kwoty
 - `PROGRESS.md` i `work_progress.md` aktualizowane po każdym ticku — zawsze widoczny na GitHub
 - Cron co 20 min to rekomendowany model deploymentu (bez persistent daemon)
 
@@ -40,6 +40,7 @@ auto-coder run --live
 - **AI Manager** — generuje zadania z briefu (`cc`, `claude`, `anthropic`, `codex`) — [CC-Manager Bridge](docs/cc-manager-bridge-spec.md)
 - **AI Workers** — wykonują zadania w izolowanych worktrees (`ccg`, `cc`, `cch`, `gemini`, `qwen`, `codex`)
 - **Fallback Chain** — automatyczne przełączanie przy błędach kwotowych: `ccg` → `cc` → `cch` → `gemini` → `qwen` → `codex`
+- **Quota Error Detection** — wykrywa błędy "hit your limit", 429, "subscription limit" niezależnie od returncode
 - **Auto PR/merge** — automatyczne otwieranie PR i merge po przejściu testów (domyślnie włączone)
 - **Progress tracking** — `PROGRESS.md` i `work_progress.md` z emoji statusami
 - **YAML validation** — walidacja `tasks.yaml` z podpowiedziami błędów — [Walidacja YAML](docs/yaml-validation.md)

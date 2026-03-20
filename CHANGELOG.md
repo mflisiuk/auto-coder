@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-03-20] - Quota Error Detection Improvement
+### Co się zmieniło
+- **Zrefaktoryzowano `is_quota_error()`** w `worker.py` — wykrywa błędy kwotowe niezależnie od `returncode`, parsując JSON z `is_error:true` dla dowolnego kodu wyjścia
+- **Rozszerzono listę fraz kwotowych** — dodano "subscription limit", "limit reached" oraz wzorce regex `hit\s+(?:your\s+)?limit` i `subscription\s+limit`
+- **Uproszczono logikę** — usunięto specjalne przetwarzanie dla `returncode == 0`, jednolita pętla dla wszystkich przypadków
+
+### Poprawki błędów
+- Naprawiono niewykrywanie błędów "hit your limit" gdy Claude Code zwraca niezerowy returncode
+- Naprawiono zależność detekcji od konkretnego kodu wyjścia — teraz liczy się treść błędu, nie returncode
+
 ## [2026-03-19] - Auto-Generated Artifacts Ignore Policy
 ### Co się zmieniło
 - **Dodano `IGNORED_PATTERNS`** w `policy.py` — lista wzorców plików auto-generowanych (`__pycache__`, `.pyc`, `.pyo`, `.pyd`, `.so`, `.dll`, `.egg-info`)
